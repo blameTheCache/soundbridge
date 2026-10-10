@@ -3,7 +3,7 @@
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Product>SoundBridge</Product>
     <Authors>blameTheCache</Authors>
     <Copyright>Copyright (c) 2026 blameTheCache. Portions (c) 2020 Richard Yu (AudioPlaybackConnector, MIT).</Copyright>

@@ -18,8 +18,11 @@ internal sealed class SingleInstance : IDisposable
         _activate = activate;
     }
 
-    /// <summary>Returns null when another instance already owns the session; that instance has been asked to show itself.</summary>
-    public static SingleInstance? TryAcquire()
+    /// <summary>
+    /// Returns null when another instance already owns the session. That instance is asked to show its
+    /// window unless <paramref name="showExisting"/> is false (a launch the user did not make).
+    /// </summary>
+    public static SingleInstance? TryAcquire(bool showExisting)
     {
         var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
         var activate = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, ActivateEventName);
@@ -28,7 +31,11 @@ internal sealed class SingleInstance : IDisposable
             return new SingleInstance(mutex, activate);
         }
 
-        activate.Set();
+        if (showExisting)
+        {
+            activate.Set();
+        }
+
         activate.Dispose();
         mutex.Dispose();
         return null;

@@ -7,9 +7,14 @@ built into Windows since Windows 10 version 2004. Windows mixes the phone's audi
 plays both on the current output device. Everything is local: no account, no cloud service, no phone app and
 no audio driver.
 
+On Windows 11 the installed version can also take **phone calls**: answer on the phone as usual, and the call
+moves to the PC's speaker or headphones and microphone.
+
 > **Status.** Connecting, simultaneous phone and laptop playback, disconnecting and tray operation have
 > been confirmed on real hardware (one laptop, one phone). Automatic reconnection, Bluetooth off/on and
-> sleep/resume are covered by automated tests but **have not yet been exercised on hardware**. See
+> sleep/resume are covered by automated tests but **have not yet been exercised on hardware**. Phone calls
+> through the app, and music coming back by itself after a call, have been confirmed on the same hardware.
+> See
 > [Verification](#verification) and the [hardware checklist](docs/hardware-test-checklist.md).
 
 ## Requirements
@@ -18,7 +23,9 @@ no audio driver.
 - A Bluetooth adapter, and a phone already paired with the PC in Windows settings.
 - [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) for the default build
   (or build self-contained, below).
-- No administrator rights, at any point.
+- No administrator rights for music.
+- For phone calls: Windows 11, and Developer Mode switched on so the app can be installed without a signing
+  certificate (switching Developer Mode on is the one step that asks for administrator consent).
 
 ## Run
 
@@ -28,10 +35,23 @@ Start `dist\SoundBridge\SoundBridge.exe`. The window opens on every launch you s
 2. The phone appears under **Audio sources** and is selected. Click **Connect**.
 3. Play something on the phone.
 
+### Phone calls (Windows 11)
+
+Windows only gives the Bluetooth hands-free role to an *installed* app, so calls need one extra step:
+
+1. Turn on **Developer Mode**: Settings > System > Advanced (older builds: "For developers").
+2. Exit SoundBridge if it is running, then run `.\packaging\Install.ps1`.
+3. Start **SoundBridge** from the Start menu. Started any other way it has no package identity and calls
+   stay unavailable.
+4. In Settings, turn on **Hear phone calls on this PC**.
+
+Settings and logs are shared with the plain exe. `.\packaging\Install.ps1 -Uninstall` removes the
+installation; keep `dist\SoundBridge-package` where it is until then, because Windows runs it in place.
+
 ## Build
 
 ```powershell
-# Tests, then a single-file build in .\dist\SoundBridge (needs the .NET 10 SDK)
+# Tests, then dist\SoundBridge (plain exe) and dist\SoundBridge-package (installable). Needs the .NET 10 SDK.
 .\build.ps1
 
 # Same, bundling the .NET runtime so the target PC needs nothing installed
@@ -83,14 +103,34 @@ default), the remembered phone is connected at start-up, including after a manua
 session. Turn that setting off if you want a disconnect to survive restarts. A phone that SoundBridge sees
 for the first time is never connected automatically.
 
+### Phone calls
+
+With **Hear phone calls on this PC** on, SoundBridge registers the PC as the phone's hands-free device.
+
+- **Answer on the phone.** Windows 11 shows no incoming-call prompt for this, and SoundBridge does not add
+  one. As soon as the call is being talked on, SoundBridge asks Windows to move its audio to the PC.
+- **Audio devices.** Windows carries the call between the phone and its *default communication* speaker and
+  microphone (Settings > System > Sound). SoundBridge does not handle the audio and cannot choose the devices.
+- **Each call is moved once.** If you send a call back to the phone from the phone's own call screen, it
+  stays there.
+- **Ringing calls are left alone**, so declining or ignoring a call works as it always did.
+- **Music after a call.** When a call ends, Windows goes on reporting the music link as open but plays
+  nothing from it, while the phone keeps "playing" into silence. SoundBridge therefore opens a fresh music
+  link about a second and a half after each call. Expect a brief gap before the music is back.
+- The role is held only while SoundBridge runs with the switch on. Switching it off, or exiting, gives it back.
+- Windows starts the installed app by itself when a call arrives. If SoundBridge is already running, that
+  extra launch ends at once without showing anything.
+
 ### Closing and exiting
 
 - **Close (X)** hides the window to the tray and keeps the phone connected. The first time, SoundBridge asks
   which you want; the choice is under **Settings → Tray**, and the X button's tooltip states what it will do.
 - **Exit** (tray menu, or **Settings → About**) disconnects the phone and ends the process.
 - The tray icon's centre dot shows the state: green connected, amber working or waiting, red failed.
-- **Launch at sign-in** writes a per-user entry under `HKCU\...\Run`. Started that way, SoundBridge stays in
-  the tray unless **Start in the tray at sign-in** is turned off.
+- **Launch at sign-in** writes a per-user entry under `HKCU\...\Run`; the installed version uses its
+  package's startup task instead, which Windows also lists under Startup apps, and takes the setting over
+  from the plain exe the first time it runs. Started at sign-in, SoundBridge stays in the tray unless
+  **Start in the tray at sign-in** is turned off.
 
 ### Where things are stored
 
@@ -114,19 +154,21 @@ There are no third-party packages in the shipped app.
 ```
 src/SoundBridge.Core        no Windows APIs; fully unit-tested
   Connection/               ConnectionController (state + reconnection), ReconnectPolicy, IAudioLink
+  Calls/                    CallsController (holds the hands-free role, moves calls), ICallTransport
   Settings/                 AppSettings, SettingsStore (JSON, atomic write, falls back to defaults)
   Diagnostics/              ILog, FileLog (daily files, retention, size cap)
 
 src/SoundBridge             the Windows app
   Bluetooth/                BluetoothAudioLink (AudioPlaybackConnection), AudioSourceWatcher (DeviceWatcher),
-                            BluetoothRadioMonitor
-  Platform/                 TrayIcon (Shell_NotifyIcon), StartupRegistration (Run key), PowerMonitor,
-                            SingleInstance
+                            BluetoothRadioMonitor, PhoneCallTransport (PhoneLineTransportDevice)
+  Platform/                 TrayIcon (Shell_NotifyIcon), StartupRegistration (Run key or startup task),
+                            PowerMonitor, SingleInstance, AppIdentity (packaged or not, why started)
   UI/                       MainWindow, MainViewModel, ConnectionPresenter, ThemeManager, Styles
   App.xaml.cs               composition root
 
 tests/SoundBridge.Core.Tests   xUnit
 tools/IconGen                  regenerates Assets/app.ico from the drawing code the tray icon uses
+packaging/                     AppxManifest.xml, logos and Install.ps1 for the installed version
 ```
 
 **Connection control.** `ConnectionController` is the only owner of the audio link. Its state is an immutable
@@ -137,8 +179,15 @@ links are disposed before the next one is opened, and event handlers are removed
 `OpenAsync` receives a cancellation token; whether Windows abandons the request early is up to Windows, so
 the result of a cancelled attempt is ignored regardless.
 
+**Phone calls.** `CallsController` takes a wish ("route calls for this phone" or not) and a single worker
+brings Windows in line with the latest wish one step at a time, so overlapping requests cannot interleave.
+Two things are needed for Windows to register the app, and neither is obvious: `RequestAccessAsync` must be
+called before `RegisterApp`, and the package manifest must declare the `windows.phoneCallActivation`
+extension. Without the extension `RegisterApp` returns normally and registers nothing.
+
 **Windows APIs used.** `Windows.Media.Audio.AudioPlaybackConnection`,
 `Windows.Devices.Enumeration.DeviceWatcher`, `Windows.Devices.Radios.Radio` (read-only),
+`Windows.ApplicationModel.Calls` (`PhoneLineTransportDevice`, `PhoneLine`, `PhoneCall`),
 `Shell_NotifyIcon`, `DwmSetWindowAttribute`, and `SystemEvents.PowerModeChanged`. `AudioPlaybackConnection`
 is declared agile with `ThreadingModel.Both` in the OS metadata, so it is created and closed on thread-pool
 threads and never depends on the UI thread.
@@ -147,7 +196,7 @@ threads and never depends on the UI thread.
 
 ### Automated (run on every `build.ps1`)
 
-57 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link and a fake clock:
+84 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
 
 - duplicate connect requests while connecting or connected start nothing new;
 - manual disconnect cancels an in-flight attempt, ignores its late success, cancels a pending retry, and is
@@ -156,7 +205,12 @@ threads and never depends on the UI thread.
 - Bluetooth off/on and sleep/resume paths, with and without automatic reconnection;
 - switching phones releases the old link first; a link that closes while opening is treated as a failure;
 - a randomised multi-threaded run that must leave no link undisposed and the state disconnected;
-- settings round-trip, corrupt-file recovery and value clamping; log format, rotation and retention.
+- settings round-trip, corrupt-file recovery and value clamping; log format, rotation and retention;
+- call routing: the role is claimed once and released when switched off, on a phone change and on exit; a
+  refused claim is reported and retried only when there is a new reason to; a call being talked on at the
+  phone is moved once, a ringing call is not, and a call sent back to the phone is not pulled again;
+- reopening the music link: only an established link is reopened, never one the user disconnected, and a
+  reopen that fails is recovered like any dropped link.
 
 As a check on the tests themselves, seven deliberate faults were introduced into the controller one at a
 time; six were caught, and the seventh (not cancelling the timer on disconnect) is harmless because a second
@@ -175,6 +229,24 @@ Bluetooth, and wired headphones on the laptop.
 - **Launch at sign-in** switched on from Settings. An actual start at sign-in has not been observed yet.
 
 One phone and one Bluetooth adapter is a single data point, not a compatibility claim.
+
+### Phone calls on hardware
+
+By the project owner in October 2026, on the same setup, running Windows 11:
+
+- **Proven with a test build:** a packaged probe claimed the hands-free role, saw an incoming call, and
+  moved it to the PC four seconds after it was answered on the phone. The owner heard the caller in the
+  headphones and the caller heard the owner. Windows showed no incoming-call prompt. The music link stayed
+  up throughout the call.
+- **Confirmed in the app itself:** installing; the role being claimed, released and claimed again; and
+  two real calls answered on the phone and moved to the PC, including while music was playing.
+- **Found by that test:** after each call the music stayed silent although the app showed "Connected" and
+  the phone showed the song playing. The log shows the owner disconnecting and reconnecting after both
+  calls. SoundBridge now reopens the music link itself when a call ends.
+- **Confirmed after that change:** a third call, with the music link reopened automatically a second and a
+  half after hanging up and reported open again half a second later. The owner reports it working, and the
+  log shows no manual reconnect afterwards.
+- **Not yet done:** outgoing calls, and a call arriving while SoundBridge is not running.
 
 ### Exercised on a real machine with a simulated link
 
@@ -216,7 +288,17 @@ Both are deferred rather than promised.
 
 - Confirmed on one hardware setup only. Reconnection, Bluetooth toggling and sleep/resume have not been
   exercised on hardware, as stated above.
-- One phone at a time. Phone calls, the headphone microphone, Wi-Fi streaming and recording are out of scope.
+- One phone at a time. Wi-Fi streaming and recording are out of scope.
+- Phone calls need Windows 11 and the installed version, and installing currently needs Developer Mode
+  because the package is unsigned. A signed `.msix` would remove that requirement.
+- No call screen: SoundBridge does not ring, show who is calling, or offer answer and hang-up buttons. Answer,
+  decline and hang up on the phone.
+- Call audio uses Windows' default communication devices. If callers say you are too quiet, check that
+  microphone's level in Windows; another project reports phones turning it down and Windows keeping it there.
+- Only one app can hold a phone's calls. If Phone Link (or another app) has claimed the phone, Windows
+  refuses SoundBridge; removing and re-pairing the phone is reported to clear that.
+- Windows' automatic Focus rules (full-screen apps, games) are reported by another project to drop the
+  hands-free link when they switch on or off. Not observed here yet.
 - The list shows the state of SoundBridge's own link. It does not show whether a phone is in range.
 - After the retry limit is reached, reconnection needs a click; SoundBridge does not keep trying indefinitely.
 - Sleep handling relies on Windows' suspend/resume notifications. If a device does not deliver them (some
@@ -236,7 +318,10 @@ Both are deferred rather than promised.
   attempts, the last entry repeating: `ok`, `fail`, `deny`, `drop` (opens, then closes after 4 s). For
   example `drop,fail,ok` shows connect → drop → failed retry → successful retry. The window title reads
   "SoundBridge (simulated link)". This code is not compiled into Release builds.
-- `dotnet run --project tools/IconGen -- src/SoundBridge/Assets/app.ico` regenerates the icon.
+- `dotnet run --project tools/IconGen -- src/SoundBridge/Assets/app.ico` regenerates the icon, and
+  `dotnet run --project tools/IconGen -- --package-images packaging/Images` the package logos.
+- Phone calls cannot be simulated or run from `dotnet run`: without package identity Windows answers
+  `DeniedBySystem`. Build, install with `packaging\Install.ps1`, and start from the Start menu.
 
 ## Attribution and licence
 
@@ -245,6 +330,12 @@ SoundBridge is released under the [MIT License](LICENSE).
 The Bluetooth connection flow is adapted from
 [AudioPlaybackConnector](https://github.com/ysc3839/AudioPlaybackConnector) by Richard Yu, also MIT-licensed.
 The upstream copyright notice and licence text are reproduced in [NOTICE.md](NOTICE.md).
+
+The phone-call support was written from scratch against Microsoft's API, with no code taken from other
+projects. Two facts it depends on were learned by reading how others got it working, and are credited here:
+the `windows.phoneCallActivation` manifest requirement, from [Sefirah](https://github.com/shrimqy/Sefirah)
+(the one open-source app found doing this on Windows 11), and the need to call `RequestAccessAsync` before
+`RegisterApp`, from the findings published with [klangbruecke](https://github.com/MYSTRAVIL/klangbruecke).
 
 API references: [AudioPlaybackConnection](https://learn.microsoft.com/en-us/uwp/api/windows.media.audio.audioplaybackconnection)
 and [Enable audio playback from remote Bluetooth-connected devices](https://learn.microsoft.com/en-us/windows/uwp/audio-video-camera/enable-remote-audio-playback).

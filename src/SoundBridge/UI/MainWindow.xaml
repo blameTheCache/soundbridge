@@ -254,9 +254,20 @@
                     </Grid>
                 </Border>
 
-                <StackPanel Grid.Row="4" Margin="4,12,0,0" Orientation="Horizontal">
-                    <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource TextFaintBrush}" Text="Plays through the Windows default output." />
-                    <Button Margin="2,0,0,0" Command="{Binding OpenSoundSettingsCommand}" Content="Sound settings" Style="{StaticResource LinkButton}" />
+                <StackPanel Grid.Row="4" Margin="4,12,0,0">
+                    <StackPanel Orientation="Horizontal">
+                        <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource TextFaintBrush}" Text="Plays through the Windows default output." />
+                        <Button Margin="2,0,0,0" Command="{Binding OpenSoundSettingsCommand}" Content="Sound settings" Style="{StaticResource LinkButton}" />
+                    </StackPanel>
+                    <TextBlock Margin="0,2,0,0"
+                               FontSize="12"
+                               Foreground="{DynamicResource TextFaintBrush}"
+                               TextTrimming="CharacterEllipsis"
+                               ToolTip="{Binding CallsStatusText}"
+                               Visibility="{Binding ShowCallsLine, Converter={StaticResource BoolToVisibility}}">
+                        <Run Text="Phone calls:" />
+                        <Run Text="{Binding CallsStatusText, Mode=OneWay}" />
+                    </TextBlock>
                 </StackPanel>
             </Grid>
 
@@ -349,6 +360,25 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Margin="4,22,0,8" Style="{StaticResource SectionLabel}" Text="PHONE CALLS" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <Grid Margin="16,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Hear phone calls on this PC" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Answer on your phone as usual. The call then moves here, using the speaker and microphone Windows has set as default for communications." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Hear phone calls on this PC" IsChecked="{Binding RouteCalls}" IsEnabled="{Binding CanRouteCalls}" Style="{StaticResource Switch}" />
+                            </Grid>
+                            <Border Style="{StaticResource RowDivider}" />
+                            <TextBlock Margin="16,10,16,14" AutomationProperties.Name="Call routing status" Style="{StaticResource RowDescription}" Text="{Binding CallsStatusText}" />
                         </StackPanel>
                     </Border>
 

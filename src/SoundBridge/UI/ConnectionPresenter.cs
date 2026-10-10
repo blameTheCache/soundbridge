@@ -1,3 +1,4 @@
+using SoundBridge.Core.Calls;
 using SoundBridge.Core.Connection;
 
 namespace SoundBridge.UI;
@@ -49,6 +50,39 @@ internal static class ConnectionPresenter
                 new(StatusTone.Idle, "Not connected", "Choose a phone below to get started.", "Connect"),
 
             _ => new(StatusTone.Idle, "Not connected", "Connect to hear this phone alongside this PC's own audio.", "Connect"),
+        };
+    }
+
+    /// <summary>One line on call routing. Like the rest, it reports what Windows says, not what is audible.</summary>
+    public static string DescribeCalls(CallsSnapshot snapshot, CallSupport support)
+    {
+        if (support == CallSupport.NeedsNewerWindows)
+        {
+            return "Not available: moving calls to the PC needs Windows 11.";
+        }
+
+        if (support == CallSupport.NeedsInstalledApp)
+        {
+            return @"Not available in this copy. Windows only lets an installed app take calls: run packaging\Install.ps1, then start SoundBridge from the Start menu.";
+        }
+
+        return snapshot.State switch
+        {
+            CallsState.Off => "Off.",
+            CallsState.NoPhone => "Choose a phone first.",
+            CallsState.Starting => "Setting up…",
+            CallsState.Ready => "Ready. Answer on your phone and the call moves to this PC.",
+            CallsState.InCall when snapshot.CallOnPc => "Call in progress on this PC.",
+            CallsState.InCall => "Call in progress on the phone.",
+            CallsState.Failed => snapshot.Failure switch
+            {
+                CallClaimStatus.PhoneNotFound => "Windows does not offer this phone for calls. Check that it is paired and that phone calls are allowed for this PC in the phone's Bluetooth settings.",
+                CallClaimStatus.AccessDenied => "Windows refused access to this phone's calls. Another app, such as Phone Link, may already handle them; removing and re-pairing the phone clears that.",
+                CallClaimStatus.NotRegistered => "Windows did not register SoundBridge for this phone's calls.",
+                _ when !string.IsNullOrWhiteSpace(snapshot.FailureDetail) => $"Could not set up calls. Windows reported: {snapshot.FailureDetail}",
+                _ => "Could not set up calls.",
+            },
+            _ => string.Empty,
         };
     }
 

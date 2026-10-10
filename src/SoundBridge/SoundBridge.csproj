@@ -2,8 +2,10 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <!-- 10.0.19041 (Windows 10 2004) is the first release with AudioPlaybackConnection. -->
-    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <!-- Runs on 10.0.19041 (Windows 10 2004), the first release with AudioPlaybackConnection. Built against
+         a newer SDK because moving a phone call's audio uses types that only exist from Windows 11; those
+         calls are guarded at run time. -->
+    <TargetFramework>net10.0-windows10.0.26100.0</TargetFramework>
     <SupportedOSPlatformVersion>10.0.19041.0</SupportedOSPlatformVersion>
     <UseWPF>true</UseWPF>
     <AssemblyName>SoundBridge</AssemblyName>

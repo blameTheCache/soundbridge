@@ -7,6 +7,7 @@ using System.Windows.Data;
 using System.Windows.Interop;
 using System.Windows.Media;
 using SoundBridge.Bluetooth;
+using SoundBridge.Core.Calls;
 using SoundBridge.Core.Connection;
 using SoundBridge.Core.Diagnostics;
 using SoundBridge.Core.Settings;
@@ -23,6 +24,7 @@ public partial class App : Application, IAppShell
     private SingleInstance? _instance;
     private FileLog? _log;
     private ConnectionController? _controller;
+    private CallsController? _calls;
     private AudioSourceWatcher? _watcher;
     private BluetoothRadioMonitor? _radio;
     private PowerMonitor? _power;
@@ -64,10 +66,11 @@ public partial class App : Application, IAppShell
     {
         base.OnStartup(e);
 
-        _instance = SingleInstance.TryAcquire();
+        // Windows starts the installed app by itself when a call comes in. If SoundBridge is already
+        // running, that extra launch must end here without raising the window.
+        _instance = SingleInstance.TryAcquire(showExisting: !AppIdentity.StartedForPhoneCall);
         if (_instance is null)
         {
-            // Another copy is running and has been asked to show its window.
             Shutdown();
             return;
         }
@@ -78,8 +81,8 @@ public partial class App : Application, IAppShell
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SoundBridge");
 
         var log = _log = new FileLog(Path.Combine(dataDirectory, "logs"));
-        var autostart = e.Args.Contains(StartupRegistration.AutostartArgument, StringComparer.OrdinalIgnoreCase);
-        log.Info(Category, $"SoundBridge {typeof(App).Assembly.GetName().Version} starting on {Environment.OSVersion.VersionString} (launched at sign-in: {autostart}).");
+        var autostart = AppIdentity.StartedAtSignIn || e.Args.Contains(StartupRegistration.AutostartArgument, StringComparer.OrdinalIgnoreCase);
+        log.Info(Category, $"SoundBridge {typeof(App).Assembly.GetName().Version} starting on {Environment.OSVersion.VersionString} (installed app: {AppIdentity.IsPackaged}, launched at sign-in: {autostart}, started for a call: {AppIdentity.StartedForPhoneCall}).");
 
         DispatcherUnhandledException += (_, args) =>
         {
@@ -125,9 +128,11 @@ public partial class App : Application, IAppShell
         var controller = _controller = new ConnectionController(links, settings.ToReconnectPolicy(), log: log);
         var watcher = _watcher = new AudioSourceWatcher(log);
         var radio = _radio = new BluetoothRadioMonitor(log);
+        var calls = _calls = new CallsController(new PhoneCallTransportFactory(log), log);
         var startup = new StartupRegistration(log);
+        startup.AdoptEntryFromUnpackagedCopy();
 
-        var viewModel = _viewModel = new MainViewModel(controller, watcher, radio, store, settings, startup, themes, log, Dispatcher, this);
+        var viewModel = _viewModel = new MainViewModel(controller, calls, watcher, radio, store, settings, startup, themes, log, Dispatcher, this);
         MainWindow = _window = new MainWindow(viewModel, themes) { Title = title };
 
         var tray = _tray = new TrayIcon(log);
@@ -149,9 +154,9 @@ public partial class App : Application, IAppShell
 
         _instance.OnActivationRequested(() => Dispatcher.BeginInvoke(() => ShowWindow("second launch")));
 
-        // The window is shown on every launch the user starts. It stays hidden only when Windows started the
-        // app at sign-in and the user chose to start in the tray.
-        if (!(autostart && settings.StartHiddenAtSignIn))
+        // The window is shown on every launch the user starts. It stays hidden when Windows started the app:
+        // at sign-in (if the user chose to start in the tray) or to announce a phone call.
+        if (!(autostart && settings.StartHiddenAtSignIn) && !AppIdentity.StartedForPhoneCall)
         {
             _window.Show();
         }
@@ -161,9 +166,11 @@ public partial class App : Application, IAppShell
 
     protected override void OnExit(ExitEventArgs e)
     {
-        // Order matters: stop listening first, then release the link, then remove the tray icon.
+        // Order matters: stop listening first, then give back the hands-free role and release the music
+        // link, then remove the tray icon.
         _viewModel?.Dispose();
         _power?.Dispose();
+        _calls?.Dispose();
         _controller?.Dispose();
         _watcher?.Dispose();
         _radio?.Dispose();

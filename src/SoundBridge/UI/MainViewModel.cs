@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using SoundBridge.Bluetooth;
+using SoundBridge.Core.Calls;
 using SoundBridge.Core.Connection;
 using SoundBridge.Core.Diagnostics;
 using SoundBridge.Core.Settings;
@@ -90,8 +91,10 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 {
     private const string Category = "UI";
     private const int DoubleClickGuardMilliseconds = 500;
+    private static readonly TimeSpan MusicRestoreDelay = TimeSpan.FromSeconds(1.5);
 
     private readonly ConnectionController _controller;
+    private readonly CallsController _calls;
     private readonly AudioSourceWatcher _watcher;
     private readonly BluetoothRadioMonitor _radio;
     private readonly SettingsStore _store;
@@ -109,6 +112,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly bool _hadPreferredPhoneAtStart;
     private bool _syncingSelection;
     private bool _radioUnavailable;
+    private ConnectionPhase _lastPhase;
     private long _lastPrimaryPress = -DoubleClickGuardMilliseconds;
     private bool _launchAtSignIn;
     private bool _isSettingsOpen;
@@ -118,6 +122,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
     public MainViewModel(
         ConnectionController controller,
+        CallsController calls,
         AudioSourceWatcher watcher,
         BluetoothRadioMonitor radio,
         SettingsStore store,
@@ -129,6 +134,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         IAppShell shell)
     {
         _controller = controller;
+        _calls = calls;
         _watcher = watcher;
         _radio = radio;
         _store = store;
@@ -165,6 +171,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _countdown = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => RefreshPresentation(), dispatcher) { IsEnabled = false };
 
         _controller.Changed += OnConnectionChanged;
+        _calls.Changed += OnCallsChanged;
+        _calls.CallEnded += OnCallEnded;
         _watcher.Changed += OnSourcesChanged;
         _radio.Changed += OnRadioChanged;
     }
@@ -334,6 +342,29 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>Take the hands-free role so calls answered on the phone move to this PC.</summary>
+    public bool RouteCalls
+    {
+        get => _settings.RouteCalls && CanRouteCalls;
+        set
+        {
+            if (Save(_settings with { RouteCalls = value }))
+            {
+                _log.Info(Category, $"Call routing switched {(value ? "on" : "off")}.");
+                ApplyCallRouting();
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(ShowCallsLine));
+            }
+        }
+    }
+
+    /// <summary>False when this copy of the app, or this Windows version, cannot take calls at all.</summary>
+    public bool CanRouteCalls => _calls.Support == CallSupport.Available;
+
+    public string CallsStatusText => ConnectionPresenter.DescribeCalls(_calls.Current, _calls.Support);
+
+    public bool ShowCallsLine => RouteCalls;
+
     public bool CloseToTray
     {
         get => _settings.CloseToTray;
@@ -364,6 +395,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _watcher.Start();
         await _watcher.RefreshAsync();
         SyncDevices();
+        ApplyCallRouting();
 
         // A new session starts each time the app starts. This is the only automatic connect that does not
         // follow an established connection, and it is the documented point where a manual disconnect from a
@@ -405,6 +437,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _disposed = true;
         _countdown.Stop();
         _controller.Changed -= OnConnectionChanged;
+        _calls.Changed -= OnCallsChanged;
+        _calls.CallEnded -= OnCallEnded;
         _watcher.Changed -= OnSourcesChanged;
         _radio.Changed -= OnRadioChanged;
     }
@@ -514,6 +548,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _target = source;
         Save(_settings with { PreferredDeviceId = source.Id, PreferredDeviceName = source.Name });
         _log.Info(Category, $"Preferred phone is now '{source.Name}'.");
+        ApplyCallRouting();
         RefreshPresentation();
     }
 
@@ -529,7 +564,44 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         return true;
     }
 
-    private void OnConnectionChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(RefreshPresentation);
+    private void OnConnectionChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(() =>
+    {
+        // An open music link proves the phone is in range: a good moment to bring the hands-free link up too.
+        var phase = _controller.Current.Phase;
+        if (phase == ConnectionPhase.Connected && _lastPhase != ConnectionPhase.Connected)
+        {
+            _calls.NotifyPhoneReachable();
+        }
+
+        _lastPhase = phase;
+        RefreshPresentation();
+    });
+
+    private void OnCallsChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(CallsStatusText)));
+
+    /// <summary>
+    /// After a call Windows keeps reporting the music link as open but plays nothing from it, and the phone
+    /// goes on "playing" into silence. A fresh link brings the sound back, which is what reconnecting by hand
+    /// does. The short wait lets the call's own audio channel close first, and a new call cancels it.
+    /// </summary>
+    private async void OnCallEnded(object? sender, EventArgs e)
+    {
+        try
+        {
+            await Task.Delay(MusicRestoreDelay).ConfigureAwait(false);
+            if (!_disposed && _calls.Current.State != CallsState.InCall)
+            {
+                _controller.Reopen("a phone call ended");
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn(Category, $"Could not restore the music link after the call: {ex.Message}");
+        }
+    }
+
+    /// <summary>Tells the calls controller the current wish. It works out what, if anything, has to change.</summary>
+    private void ApplyCallRouting() => _calls.Configure(_settings.RouteCalls, _target);
 
     private void OnSourcesChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(SyncDevices);
 
@@ -541,6 +613,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         {
             // Paired devices are re-enumerated when the radio returns.
             _ = _watcher.RefreshAsync();
+            _calls.NotifyPhoneReachable();
         }
     });
 

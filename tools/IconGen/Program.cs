@@ -9,9 +9,16 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length == 2 && args[0] == "--package-images")
+        {
+            WritePackageImages(Path.GetFullPath(args[1]));
+            return 0;
+        }
+
         if (args.Length is < 1 or > 2)
         {
             Console.Error.WriteLine("Usage: IconGen <output.ico> [preview-directory]");
+            Console.Error.WriteLine("       IconGen --package-images <directory>");
             return 1;
         }
 
@@ -26,6 +33,18 @@ internal static class Program
         }
 
         return 0;
+    }
+
+    /// <summary>The logos the package manifest (packaging/AppxManifest.xml) refers to.</summary>
+    private static void WritePackageImages(string directory)
+    {
+        Directory.CreateDirectory(directory);
+        foreach (var (name, size) in new[] { ("Square150x150Logo.png", 150), ("Square44x44Logo.png", 44), ("StoreLogo.png", 50) })
+        {
+            File.WriteAllBytes(Path.Combine(directory, name), LogoRenderer.EncodePng(LogoRenderer.RenderAppIcon(size)));
+        }
+
+        Console.WriteLine($"Wrote package images to {directory}");
     }
 
     /// <summary>PNG renders of the app and tray marks, for checking them by eye at real sizes.</summary>

@@ -97,6 +97,27 @@ Settings → **Reconnect automatically** on, attempts = 5.
 | H3 | Turn **Connect when SoundBridge starts** off, exit and start the app. | It starts "Not connected" and stays that way. |
 | H4 | Turn **Launch at sign-in** off. Sign out and in. | SoundBridge is not running. No UAC prompt appeared at any point. |
 
+## J. Phone calls (Windows 11, installed version)
+
+Install with `packaging\Install.ps1`, start SoundBridge from the Start menu, and turn on
+**Settings → Hear phone calls on this PC**. The status under the switch should read "Ready".
+
+**Confirmed so far** (project owner, October 2026): J1, J2, J3 and J7.
+
+| # | Do this | Expect |
+|---|---------|--------|
+| J1 | Turn the switch on, off, and on again. | Status goes "Ready" → "Off." → "Ready". The log shows the role being claimed, unregistered, and claimed again. |
+| J2 | Have someone call the phone. Answer **on the phone**. | Within a second or two the caller's voice moves to the PC's headphones, and they can hear you through the PC's microphone. No window pops up on the PC. Status reads "Call in progress on this PC." |
+| J3 | Hang up. | Status returns to "Ready". The log shows "The call ended." |
+| J4 | Let a call ring without answering, then decline it on the phone. | Nothing moves to the PC. |
+| J5 | During a call on the PC, switch the audio back to the phone from the phone's call screen. | The call continues on the phone and SoundBridge does not pull it back. |
+| J6 | Place an **outgoing** call from the phone. | Once the other side answers, the call moves to the PC as in J2. Note what you hear while it is still ringing out. |
+| J7 | Take a call while phone music is playing through SoundBridge. | Music pauses for the call. A second or two after hanging up the status briefly shows "Connecting…", then "Connected", and the music is audible again without touching anything. The log shows "Reopening the link … a phone call ended". |
+| J8 | Turn the switch off, then take a call. | The call stays on the phone. |
+| J9 | Exit SoundBridge from the tray, then take a call. | The call stays on the phone. Note whether Windows starts SoundBridge by itself. |
+| J10 | Run the plain `dist\SoundBridge\SoundBridge.exe` instead of the installed app. | The switch is disabled and the status explains that calls need the installed version. |
+| J11 | If callers say you sound quiet. | Windows Sound settings → your default communication microphone → check its input volume. |
+
 ## I. Persistence and appearance
 
 | # | Do this | Expect |

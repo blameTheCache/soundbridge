@@ -496,6 +496,53 @@ public sealed class ConnectionControllerTests : IDisposable
     }
 
     [Fact]
+    public void Reopen_replaces_an_established_link_with_a_fresh_one()
+    {
+        var first = ConnectAndOpen(Phone);
+
+        Assert.True(_controller.Reopen("test"));
+
+        Assert.True(first.Disposed);
+        Assert.Equal(0, first.ClosedSubscribers);
+        Assert.Equal(2, _factory.Links.Count);
+        Assert.Equal(ConnectionPhase.Connecting, _controller.Current.Phase);
+
+        _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+        WaitFor(ConnectionPhase.Connected);
+    }
+
+    [Fact]
+    public void Reopen_does_nothing_unless_a_link_is_connected()
+    {
+        Assert.False(_controller.Reopen("nothing to reopen"));
+
+        _controller.Connect(Phone, ConnectOrigin.Manual);
+        Assert.False(_controller.Reopen("still connecting"));
+        Assert.Single(_factory.Links);
+
+        _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+        WaitFor(ConnectionPhase.Connected);
+        _controller.Disconnect();
+
+        Assert.False(_controller.Reopen("the user disconnected"));
+        _time.Advance(TimeSpan.FromHours(1));
+        Assert.Single(_factory.Links);
+        Assert.Equal(ConnectionPhase.Disconnected, _controller.Current.Phase);
+    }
+
+    [Fact]
+    public void A_reopen_that_fails_is_recovered_like_a_dropped_link()
+    {
+        ConnectAndOpen(Phone);
+
+        _controller.Reopen("test");
+        _factory.Latest.CompleteOpen(LinkOpenStatus.TimedOut);
+
+        WaitFor(ConnectionPhase.WaitingToRetry);
+        Assert.Equal(1, _controller.Current.RetryAttempt);
+    }
+
+    [Fact]
     public void Changed_is_raised_for_each_transition()
     {
         var phases = new List<ConnectionPhase>();

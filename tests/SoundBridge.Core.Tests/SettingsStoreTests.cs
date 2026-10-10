@@ -26,6 +26,7 @@ public sealed class SettingsStoreTests : IDisposable
         Assert.True(settings.AutoReconnect);
         Assert.True(settings.CloseToTray);
         Assert.False(settings.CloseChoiceMade);
+        Assert.False(settings.RouteCalls);
         Assert.Null(settings.PreferredDeviceId);
     }
 
@@ -44,6 +45,7 @@ public sealed class SettingsStoreTests : IDisposable
             CloseChoiceMade = true,
             TrayHintShown = true,
             StartHiddenAtSignIn = false,
+            RouteCalls = true,
             Theme = "sand",
         };
 

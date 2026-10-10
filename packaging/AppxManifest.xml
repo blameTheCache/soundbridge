@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Gives SoundBridge a package identity. Music works without one; phone calls do not, because Windows only
+  grants the Bluetooth hands-free role to a packaged app that declares what is marked "calls" below.
+
+  build.ps1 copies this file next to SoundBridge.exe in dist\SoundBridge-package, and packaging\Install.ps1
+  registers that folder with Windows.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap13="http://schemas.microsoft.com/appx/manifest/uap/windows10/13"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop6="http://schemas.microsoft.com/appx/manifest/desktop/windows10/6"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap13 desktop desktop6 rescap">
+
+  <!-- A signed package must use the signing certificate's subject as Publisher. -->
+  <Identity Name="SoundBridge" Publisher="CN=SoundBridge" Version="0.2.0.0" ProcessorArchitecture="x64" />
+
+  <Properties>
+    <DisplayName>SoundBridge</DisplayName>
+    <PublisherDisplayName>SoundBridge</PublisherDisplayName>
+    <Description>Hear your phone's music and calls through this PC over Bluetooth.</Description>
+    <Logo>Images\StoreLogo.png</Logo>
+
+    <!-- Packaged desktop apps normally get private copies of %LOCALAPPDATA% and HKCU. Turned off so the
+         installed app and the plain exe share one settings file and one log folder, at the documented paths. -->
+    <desktop6:FileSystemWriteVirtualization>disabled</desktop6:FileSystemWriteVirtualization>
+    <desktop6:RegistryWriteVirtualization>disabled</desktop6:RegistryWriteVirtualization>
+  </Properties>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+
+  <Resources>
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Applications>
+    <Application Id="App" Executable="SoundBridge.exe" EntryPoint="Windows.FullTrustApplication">
+      <uap:VisualElements
+        DisplayName="SoundBridge"
+        Description="Hear your phone's music and calls through this PC over Bluetooth."
+        BackgroundColor="transparent"
+        Square150x150Logo="Images\Square150x150Logo.png"
+        Square44x44Logo="Images\Square44x44Logo.png" />
+
+      <Extensions>
+        <!-- calls: without this, PhoneLineTransportDevice.RegisterApp returns normally but registers nothing.
+             It also means Windows starts SoundBridge when a call arrives; App.xaml.cs keeps that launch quiet. -->
+        <uap13:Extension Category="windows.phoneCallActivation" />
+
+        <!-- Launch at sign-in for the installed app. Off until the user turns it on in Settings.
+             TaskId must match StartupRegistration.StartupTaskId. -->
+        <desktop:Extension Category="windows.startupTask" Executable="SoundBridge.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="SoundBridgeStartup" Enabled="false" DisplayName="SoundBridge" />
+        </desktop:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+
+  <Capabilities>
+    <uap:Capability Name="phoneCall" />
+    <rescap:Capability Name="runFullTrust" />
+    <!-- calls: lets the app register as the phone's hands-free device. Restricted for Store submission only;
+         sideloaded packages may declare it. -->
+    <rescap:Capability Name="phoneLineTransportManagement" />
+    <!-- Required by the two virtualization settings above. -->
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+</Package>

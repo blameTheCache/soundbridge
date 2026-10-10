@@ -30,6 +30,9 @@ public sealed record AppSettings
 
     public bool StartHiddenAtSignIn { get; init; } = true;
 
+    /// <summary>Take the Bluetooth hands-free role for the preferred phone, so calls can be heard on this PC.</summary>
+    public bool RouteCalls { get; init; }
+
     public string Theme { get; init; } = DefaultTheme;
 
     public AppSettings Normalized() => this with

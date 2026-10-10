@@ -134,6 +134,40 @@ public sealed class ConnectionController : IDisposable
         Flush(null);
     }
 
+    /// <summary>
+    /// Replaces an established link with a fresh one. For the case where Windows still reports the link as
+    /// open but has stopped playing its audio, which happens after a phone call. Does nothing unless a link
+    /// is connected right now, so it can never undo a disconnect or interfere with an attempt in progress.
+    /// </summary>
+    public bool Reopen(string reason)
+    {
+        Attempt? toStart = null;
+        lock (_gate)
+        {
+            if (_disposed || _current.Phase != ConnectionPhase.Connected || _device is null)
+            {
+                return false;
+            }
+
+            _log.Info(Category, $"Reopening the link to '{_device.Name}': {reason}.");
+            StopActivityLocked();
+
+            // The connection was established, so a failure here is recovered like any dropped link.
+            _recoverable = true;
+            if (_bluetoothOn)
+            {
+                toStart = BeginAttemptLocked(retry: 0);
+            }
+            else
+            {
+                HoldForBluetoothLocked();
+            }
+        }
+
+        Flush(toStart);
+        return true;
+    }
+
     public void SetPolicy(ReconnectPolicy policy)
     {
         ArgumentNullException.ThrowIfNull(policy);
