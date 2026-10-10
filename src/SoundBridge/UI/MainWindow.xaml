@@ -70,6 +70,7 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
+                <StackPanel>
                 <!-- Bluetooth off -->
                 <Border Margin="0,0,0,12"
                         Padding="14,8,8,8"
@@ -87,6 +88,36 @@
                         <Button Grid.Column="2" Command="{Binding OpenBluetoothSettingsCommand}" Content="Open settings" Style="{StaticResource LinkButton}" />
                     </Grid>
                 </Border>
+
+                <!-- A call on the phone's line. Present only while Windows reports one. -->
+                <Border Margin="0,0,0,12"
+                        Padding="14,12"
+                        Background="{DynamicResource AccentSoftBrush}"
+                        CornerRadius="12"
+                        Visibility="{Binding IsInCall, Converter={StaticResource BoolToVisibility}}">
+                    <StackPanel>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock FontSize="14" Foreground="{DynamicResource AccentBrush}" Style="{StaticResource Glyph}" Text="&#xE717;" />
+                            <TextBlock Grid.Column="1" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="14" FontWeight="SemiBold" Text="{Binding CallTitle}" />
+                            <TextBlock Grid.Column="2" Margin="10,0,0,0" VerticalAlignment="Center" FontSize="13" Foreground="{DynamicResource TextMutedBrush}" Text="{Binding CallCaller}" TextTrimming="CharacterEllipsis" />
+                        </Grid>
+                        <StackPanel Margin="0,10,0,0" Orientation="Horizontal" Visibility="{Binding IsCallRinging, Converter={StaticResource BoolToVisibility}}">
+                            <Button Height="34" Padding="18,0" Command="{Binding AnswerCallCommand}" Content="Answer" FontSize="13" Style="{StaticResource PrimaryButton}" />
+                            <Button Height="34" Margin="8,0,0,0" Padding="18,0" Command="{Binding DeclineCallCommand}" Content="Decline" FontSize="13" Style="{StaticResource SecondaryButton}" />
+                        </StackPanel>
+                        <StackPanel Margin="0,10,0,0" Orientation="Horizontal" Visibility="{Binding IsCallLive, Converter={StaticResource BoolToVisibility}}">
+                            <Button Height="34" Padding="14,0" Command="{Binding ToggleMuteCommand}" Content="{Binding CallMuteText}" FontSize="13" Style="{StaticResource SecondaryButton}" />
+                            <Button Height="34" Margin="8,0,0,0" Padding="14,0" Command="{Binding ToggleCallDeviceCommand}" Content="{Binding CallMoveText}" FontSize="13" Style="{StaticResource SecondaryButton}" />
+                            <Button Height="34" Margin="8,0,0,0" Padding="14,0" Command="{Binding HangUpCommand}" Content="Hang up" FontSize="13" Style="{StaticResource SecondaryButton}" />
+                        </StackPanel>
+                    </StackPanel>
+                </Border>
+                </StackPanel>
 
                 <!-- Selected phone and its link -->
                 <Border Grid.Row="1" Padding="24,28,24,24" Style="{StaticResource Card}">
@@ -360,6 +391,27 @@
                                     </StackPanel>
                                 </Border>
                             </Grid>
+                            <Border Style="{StaticResource RowDivider}" />
+                            <Grid Margin="16,14" IsEnabled="{Binding AutoReconnect}">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Opacity" Value="0.45" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Keep waiting for the phone" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="After those attempts, check for the phone every two minutes for up to 12 hours and reconnect when it is back. Off: stop and say so." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Keep waiting for the phone" IsChecked="{Binding KeepWaitingForPhone}" Style="{StaticResource Switch}" />
+                            </Grid>
                         </StackPanel>
                     </Border>
 
@@ -373,9 +425,30 @@
                                 </Grid.ColumnDefinitions>
                                 <StackPanel Margin="0,0,16,0">
                                     <TextBlock Style="{StaticResource RowTitle}" Text="Hear phone calls on this PC" />
-                                    <TextBlock Style="{StaticResource RowDescription}" Text="Answer on your phone as usual. The call then moves here, using the speaker and microphone Windows has set as default for communications." />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Answer on your phone or here. The call moves to this PC, using the speaker and microphone Windows has set as default for communications." />
                                 </StackPanel>
                                 <CheckBox Grid.Column="1" AutomationProperties.Name="Hear phone calls on this PC" IsChecked="{Binding RouteCalls}" IsEnabled="{Binding CanRouteCalls}" Style="{StaticResource Switch}" />
+                            </Grid>
+                            <Border Style="{StaticResource RowDivider}" />
+                            <Grid Margin="16,14" IsEnabled="{Binding RouteCalls}">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Opacity" Value="0.45" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Ask on this PC when the phone rings" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Show a small Answer and Decline prompt above the taskbar, with the caller as the phone reports it." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Ask on this PC when the phone rings" IsChecked="{Binding ShowCallPrompt}" Style="{StaticResource Switch}" />
                             </Grid>
                             <Border Style="{StaticResource RowDivider}" />
                             <TextBlock Margin="16,10,16,14" AutomationProperties.Name="Call routing status" Style="{StaticResource RowDescription}" Text="{Binding CallsStatusText}" />

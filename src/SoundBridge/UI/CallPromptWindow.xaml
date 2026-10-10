@@ -1,0 +1,48 @@
+<Window x:Class="SoundBridge.UI.CallPromptWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:ClassModifier="internal"
+        Title="Incoming call"
+        AllowsTransparency="True"
+        Background="Transparent"
+        FontFamily="{StaticResource UiFont}"
+        FontSize="14"
+        Foreground="{DynamicResource TextBrush}"
+        ResizeMode="NoResize"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        SizeToContent="WidthAndHeight"
+        SnapsToDevicePixels="True"
+        Topmost="True"
+        UseLayoutRounding="True"
+        WindowStyle="None">
+
+    <!-- Appears above the notification area when the phone rings. It never takes keyboard focus. -->
+    <Border Width="300" Margin="16" Padding="18,16,18,18" Background="{DynamicResource SurfaceBrush}" BorderBrush="{DynamicResource LineBrush}" BorderThickness="1" CornerRadius="14">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="20" Opacity="0.35" ShadowDepth="4" />
+        </Border.Effect>
+        <StackPanel>
+            <Grid>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock FontSize="14" Foreground="{DynamicResource AccentBrush}" Style="{StaticResource Glyph}" Text="&#xE717;" />
+                    <TextBlock Margin="9,0,0,0" VerticalAlignment="Center" FontSize="12" FontWeight="SemiBold" Foreground="{DynamicResource TextMutedBrush}" Text="INCOMING CALL" />
+                </StackPanel>
+                <Button Width="26" Height="26" Margin="0,-6,-8,0" HorizontalAlignment="Right" AutomationProperties.Name="Dismiss prompt" Click="OnDismissClick" Content="&#xE8BB;" FontSize="9" Style="{StaticResource IconButton}" ToolTip="Hide this prompt. The phone keeps ringing." />
+            </Grid>
+
+            <TextBlock Margin="0,10,0,0" FontFamily="{StaticResource DisplayFont}" FontSize="18" FontWeight="SemiBold" Text="{Binding CallCallerOrUnknown}" TextTrimming="CharacterEllipsis" />
+            <TextBlock Margin="0,2,0,0" FontSize="12" Foreground="{DynamicResource TextMutedBrush}" Text="{Binding PhoneName, StringFormat='on {0}'}" TextTrimming="CharacterEllipsis" />
+
+            <Grid Margin="0,16,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="8" />
+                    <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Button Command="{Binding AnswerCallCommand}" Content="Answer" Focusable="False" Style="{StaticResource PrimaryButton}" />
+                <Button Grid.Column="2" Command="{Binding DeclineCallCommand}" Content="Decline" Focusable="False" Style="{StaticResource SecondaryButton}" />
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

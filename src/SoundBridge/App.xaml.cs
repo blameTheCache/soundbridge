@@ -27,6 +27,9 @@ public partial class App : Application, IAppShell
     private CallsController? _calls;
     private AudioSourceWatcher? _watcher;
     private BluetoothRadioMonitor? _radio;
+    private PhonePresenceMonitor? _presence;
+    private CallPromptWindow? _callPrompt;
+    private bool _callPromptDismissed;
     private PowerMonitor? _power;
     private ThemeManager? _themes;
     private MainViewModel? _viewModel;
@@ -66,19 +69,23 @@ public partial class App : Application, IAppShell
     {
         base.OnStartup(e);
 
+        // SOUNDBRIDGE_DATA_DIR relocates settings and logs, which keeps development runs away from real
+        // settings. Such a run is also its own single-instance scope, so it can start beside the installed app.
+        var customData = Environment.GetEnvironmentVariable("SOUNDBRIDGE_DATA_DIR") is { Length: > 0 } custom ? Path.GetFullPath(custom) : null;
+        var dataDirectory = customData ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SoundBridge");
+        // A stable hash: string.GetHashCode differs from one process to the next.
+        var scope = customData is null
+            ? string.Empty
+            : "." + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(customData.ToUpperInvariant())), 0, 6);
+
         // Windows starts the installed app by itself when a call comes in. If SoundBridge is already
         // running, that extra launch must end here without raising the window.
-        _instance = SingleInstance.TryAcquire(showExisting: !AppIdentity.StartedForPhoneCall);
+        _instance = SingleInstance.TryAcquire(showExisting: !AppIdentity.StartedForPhoneCall, scope);
         if (_instance is null)
         {
             Shutdown();
             return;
         }
-
-        // SOUNDBRIDGE_DATA_DIR relocates settings and logs, which keeps development runs away from real settings.
-        var dataDirectory = Environment.GetEnvironmentVariable("SOUNDBRIDGE_DATA_DIR") is { Length: > 0 } custom
-            ? custom
-            : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "SoundBridge");
 
         var log = _log = new FileLog(Path.Combine(dataDirectory, "logs"));
         var autostart = AppIdentity.StartedAtSignIn || e.Args.Contains(StartupRegistration.AutostartArgument, StringComparer.OrdinalIgnoreCase);
@@ -128,12 +135,26 @@ public partial class App : Application, IAppShell
         var controller = _controller = new ConnectionController(links, settings.ToReconnectPolicy(), log: log);
         var watcher = _watcher = new AudioSourceWatcher(log);
         var radio = _radio = new BluetoothRadioMonitor(log);
-        var calls = _calls = new CallsController(new PhoneCallTransportFactory(log), log);
+        var presence = _presence = new PhonePresenceMonitor(log);
+        ICallTransportFactory callTransports = new PhoneCallTransportFactory(log);
+#if DEBUG
+        if (Environment.GetEnvironmentVariable("SOUNDBRIDGE_SIMULATE_CALLS") is { Length: > 0 })
+        {
+            callTransports = new SimulatedCallTransportFactory(log);
+            title = "SoundBridge (simulated calls)";
+        }
+#endif
+
+        var calls = _calls = new CallsController(callTransports, log);
         var startup = new StartupRegistration(log);
         startup.AdoptEntryFromUnpackagedCopy();
 
-        var viewModel = _viewModel = new MainViewModel(controller, calls, watcher, radio, store, settings, startup, themes, log, Dispatcher, this);
+        var viewModel = _viewModel = new MainViewModel(controller, calls, watcher, radio, presence, store, settings, startup, themes, log, Dispatcher, this);
         MainWindow = _window = new MainWindow(viewModel, themes) { Title = title };
+
+        // Whether the prompt is needed depends on whether the main window, which has the same buttons, is in front.
+        _window.Activated += (_, _) => UpdateCallPrompt();
+        _window.Deactivated += (_, _) => UpdateCallPrompt();
 
         var tray = _tray = new TrayIcon(log);
         tray.Activated += (_, _) => ShowWindow("tray icon");
@@ -144,6 +165,10 @@ public partial class App : Application, IAppShell
             if (args.PropertyName is nameof(MainViewModel.TrayTooltip) or nameof(MainViewModel.Tone))
             {
                 UpdateTray(force: false);
+            }
+            else if (args.PropertyName is nameof(MainViewModel.IsCallRinging) or nameof(MainViewModel.ShowCallPrompt))
+            {
+                UpdateCallPrompt();
             }
         };
         UpdateTray(force: true);
@@ -168,8 +193,15 @@ public partial class App : Application, IAppShell
     {
         // Order matters: stop listening first, then give back the hands-free role and release the music
         // link, then remove the tray icon.
+        if (_callPrompt is not null)
+        {
+            _callPrompt.AllowClose = true;
+            _callPrompt.Close();
+        }
+
         _viewModel?.Dispose();
         _power?.Dispose();
+        _presence?.Dispose();
         _calls?.Dispose();
         _controller?.Dispose();
         _watcher?.Dispose();
@@ -197,6 +229,48 @@ public partial class App : Application, IAppShell
     {
         _log?.Info(Category, $"Showing the window ({reason}).");
         _window?.ShowAndActivate();
+    }
+
+    /// <summary>
+    /// Shows the Answer / Decline prompt while the phone rings, unless the main window is already in front
+    /// (it carries the same buttons) or the user dismissed the prompt for this call.
+    /// </summary>
+    private void UpdateCallPrompt()
+    {
+        if (_viewModel is null)
+        {
+            return;
+        }
+
+        if (!_viewModel.IsCallRinging)
+        {
+            _callPromptDismissed = false;
+            _callPrompt?.Hide();
+            return;
+        }
+
+        var mainWindowInFront = _window is { IsVisible: true, IsActive: true };
+        if (!_viewModel.ShowCallPrompt || _callPromptDismissed || mainWindowInFront)
+        {
+            _callPrompt?.Hide();
+            return;
+        }
+
+        if (_callPrompt is null)
+        {
+            _callPrompt = new CallPromptWindow(_viewModel);
+            _callPrompt.Dismissed += (_, _) =>
+            {
+                _callPromptDismissed = true;
+                _callPrompt.Hide();
+            };
+        }
+
+        if (!_callPrompt.IsVisible)
+        {
+            _log?.Info(Category, "Showing the incoming-call prompt.");
+            _callPrompt.Show();
+        }
     }
 
     private void UpdateTray(bool force)
@@ -252,6 +326,23 @@ public partial class App : Application, IAppShell
         var exit = new MenuItem { Header = "Exit", Command = viewModel.ExitCommand, Style = itemStyle, ToolTip = "Disconnects your phone and quits completely" };
 
         var menu = new ContextMenu { DataContext = viewModel, Style = (Style)FindResource("TrayMenu") };
+
+        // Call actions sit at the top and exist only while there is a call.
+        var visibility = (IValueConverter)FindResource("BoolToVisibility");
+        void AddCallItem(string header, System.Windows.Input.ICommand command, string visibleWhen)
+        {
+            var item = new MenuItem { Header = header, Command = command, Style = itemStyle };
+            item.SetBinding(UIElement.VisibilityProperty, new Binding(visibleWhen) { Converter = visibility });
+            menu.Items.Add(item);
+        }
+
+        AddCallItem("Answer call", viewModel.AnswerCallCommand, nameof(MainViewModel.IsCallRinging));
+        AddCallItem("Decline call", viewModel.DeclineCallCommand, nameof(MainViewModel.IsCallRinging));
+        AddCallItem("Hang up", viewModel.HangUpCommand, nameof(MainViewModel.IsCallLive));
+        var callSeparator = new Separator { Style = (Style)FindResource("TrayMenuSeparator") };
+        callSeparator.SetBinding(UIElement.VisibilityProperty, new Binding(nameof(MainViewModel.IsInCall)) { Converter = visibility });
+        menu.Items.Add(callSeparator);
+
         menu.Items.Add(open);
         menu.Items.Add(toggle);
         menu.Items.Add(new Separator { Style = (Style)FindResource("TrayMenuSeparator") });

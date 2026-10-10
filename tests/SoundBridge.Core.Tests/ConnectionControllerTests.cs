@@ -139,7 +139,7 @@ public sealed class ConnectionControllerTests : IDisposable
     [Fact]
     public void Retries_stop_after_the_configured_maximum()
     {
-        Recreate(new ReconnectPolicy { MaxRetries = 3 });
+        Recreate(new ReconnectPolicy { MaxRetries = 3, KeepWaiting = false });
         ConnectAndOpen(Phone).RaiseClosed();
 
         foreach (var seconds in new[] { 2, 4, 8 })
@@ -157,6 +157,267 @@ public sealed class ConnectionControllerTests : IDisposable
 
         _time.Advance(TimeSpan.FromHours(1));
         Assert.Equal(4, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void When_the_retries_run_out_it_waits_for_the_phone_instead_of_giving_up()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+
+        var waiting = _controller.Current;
+        Assert.Equal(ConnectionPhase.WaitingForPhone, waiting.Phase);
+        Assert.Equal(_time.GetLocalNow() + TimeSpan.FromMinutes(2), waiting.NextRetryAt);
+        Assert.Equal(ConnectionFailure.TimedOut, waiting.Failure);
+        Assert.True(waiting.IsActive);
+        Assert.Equal(6, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void While_waiting_it_checks_at_the_slow_interval_and_reconnects_when_the_phone_answers()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+
+        _time.Advance(TimeSpan.FromSeconds(119));
+        Assert.Equal(6, _factory.Links.Count);
+
+        _time.Advance(TimeSpan.FromSeconds(1));
+        Assert.Equal(7, _factory.Links.Count);
+        Assert.True(_controller.Current is { Phase: ConnectionPhase.Connecting, BackgroundCheck: true });
+
+        _factory.Latest.CompleteOpen(LinkOpenStatus.TimedOut);
+        WaitFor(ConnectionPhase.WaitingForPhone);
+
+        _time.Advance(TimeSpan.FromMinutes(2));
+        _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+
+        WaitFor(ConnectionPhase.Connected);
+        Assert.Equal(8, _factory.Links.Count);
+        Assert.False(_controller.Current.BackgroundCheck);
+    }
+
+    [Fact]
+    public void Seeing_the_phone_while_waiting_checks_at_once()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+        _time.Advance(TimeSpan.FromSeconds(30));
+
+        _controller.NotifyPhoneSeen();
+
+        Assert.Equal(7, _factory.Links.Count);
+        _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+        WaitFor(ConnectionPhase.Connected);
+
+        // The slow check that was pending must not fire on top of the new connection.
+        _time.Advance(TimeSpan.FromHours(1));
+        Assert.Equal(7, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void A_sighting_right_after_a_failed_check_is_ignored()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+        _time.Advance(TimeSpan.FromMinutes(2));
+        _factory.Latest.CompleteOpen(LinkOpenStatus.TimedOut);
+        WaitFor(ConnectionPhase.WaitingForPhone);
+
+        _time.Advance(TimeSpan.FromSeconds(5));
+        _controller.NotifyPhoneSeen();
+        Assert.Equal(7, _factory.Links.Count);
+
+        _time.Advance(TimeSpan.FromSeconds(6));
+        _controller.NotifyPhoneSeen();
+        Assert.Equal(8, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void A_sighting_does_nothing_unless_the_controller_is_waiting_for_the_phone()
+    {
+        _controller.NotifyPhoneSeen();
+        Assert.Empty(_factory.Links);
+
+        ConnectAndOpen(Phone);
+        _controller.NotifyPhoneSeen();
+        Assert.Single(_factory.Links);
+
+        _controller.Disconnect();
+        _controller.NotifyPhoneSeen();
+        Assert.Single(_factory.Links);
+        Assert.Equal(ConnectionPhase.Disconnected, _controller.Current.Phase);
+    }
+
+    [Fact]
+    public void Waiting_for_the_phone_ends_after_the_limit()
+    {
+        Recreate(new ReconnectPolicy { MaxRetries = 1, WaitLimit = TimeSpan.FromMinutes(5) });
+        ConnectAndOpen(Phone).RaiseClosed();
+        _time.Advance(TimeSpan.FromSeconds(2));
+        _factory.Latest.CompleteOpen(LinkOpenStatus.TimedOut);
+        WaitFor(ConnectionPhase.WaitingForPhone);
+
+        // The first two checks fall inside the five-minute limit; the third does not.
+        for (var check = 0; check < 3; check++)
+        {
+            // The controller handles each result on another thread; let it schedule the next check first.
+            WaitFor(ConnectionPhase.WaitingForPhone);
+            _time.Advance(TimeSpan.FromMinutes(2));
+            _factory.Latest.CompleteOpen(LinkOpenStatus.TimedOut);
+        }
+
+        WaitFor(ConnectionPhase.Failed);
+        Assert.True(_controller.Current.RetriesExhausted);
+        var links = _factory.Links.Count;
+        _time.Advance(TimeSpan.FromHours(24));
+        Assert.Equal(links, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void Manual_disconnect_while_waiting_for_the_phone_stops_the_checks()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+
+        _controller.Disconnect();
+
+        Assert.Equal(ConnectionPhase.Disconnected, _controller.Current.Phase);
+        _controller.NotifyPhoneSeen();
+        _time.Advance(TimeSpan.FromHours(24));
+        Assert.Equal(6, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void Bluetooth_off_while_waiting_for_the_phone_resumes_with_fresh_retries_when_it_returns()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+
+        _controller.SetBluetoothAvailable(false);
+        Assert.Equal(ConnectionPhase.WaitingForBluetooth, _controller.Current.Phase);
+        _time.Advance(TimeSpan.FromHours(1));
+        Assert.Equal(6, _factory.Links.Count);
+
+        _controller.SetBluetoothAvailable(true);
+
+        Assert.Equal(ConnectionPhase.WaitingToRetry, _controller.Current.Phase);
+        Assert.Equal(1, _controller.Current.RetryAttempt);
+    }
+
+    [Fact]
+    public void Turning_waiting_off_while_waiting_gives_up()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+
+        _controller.SetPolicy(new ReconnectPolicy { KeepWaiting = false });
+
+        Assert.Equal(ConnectionPhase.Failed, _controller.Current.Phase);
+        Assert.True(_controller.Current.RetriesExhausted);
+        _time.Advance(TimeSpan.FromHours(24));
+        Assert.Equal(6, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void A_phone_that_keeps_closing_the_link_is_not_reconnected_for_ever()
+    {
+        ConnectAndOpen(Phone);
+
+        // Each automatic reconnect succeeds and is closed again within seconds.
+        for (var round = 0; round < 3; round++)
+        {
+            _factory.Latest.RaiseClosed();
+            WaitFor(ConnectionPhase.WaitingToRetry);
+            _time.Advance(TimeSpan.FromSeconds(2));
+            _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+            WaitFor(ConnectionPhase.Connected);
+            _time.Advance(TimeSpan.FromSeconds(5));
+        }
+
+        _factory.Latest.RaiseClosed();
+
+        Assert.Equal(ConnectionPhase.Failed, _controller.Current.Phase);
+        Assert.Equal(ConnectionFailure.Unstable, _controller.Current.Failure);
+        var links = _factory.Links.Count;
+        _controller.NotifyPhoneSeen();
+        _time.Advance(TimeSpan.FromHours(24));
+        Assert.Equal(links, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void A_restored_link_that_lasts_counts_as_recovered()
+    {
+        ConnectAndOpen(Phone);
+
+        // Many drops, but each restored link holds for longer than the stability window.
+        for (var round = 0; round < 8; round++)
+        {
+            _factory.Latest.RaiseClosed();
+            WaitFor(ConnectionPhase.WaitingToRetry);
+            _time.Advance(TimeSpan.FromSeconds(2));
+            _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+            WaitFor(ConnectionPhase.Connected);
+            _time.Advance(TimeSpan.FromMinutes(5));
+        }
+
+        _factory.Latest.RaiseClosed();
+
+        Assert.Equal(ConnectionPhase.WaitingToRetry, _controller.Current.Phase);
+    }
+
+    [Fact]
+    public void Connecting_by_hand_forgives_earlier_instability()
+    {
+        ConnectAndOpen(Phone);
+        for (var round = 0; round < 2; round++)
+        {
+            _factory.Latest.RaiseClosed();
+            WaitFor(ConnectionPhase.WaitingToRetry);
+            _time.Advance(TimeSpan.FromSeconds(2));
+            _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+            WaitFor(ConnectionPhase.Connected);
+        }
+
+        _controller.Disconnect();
+        ConnectAndOpen(Phone);
+        _factory.Latest.RaiseClosed();
+        WaitFor(ConnectionPhase.WaitingToRetry);
+        _time.Advance(TimeSpan.FromSeconds(2));
+        _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+        WaitFor(ConnectionPhase.Connected);
+        _factory.Latest.RaiseClosed();
+
+        Assert.Equal(ConnectionPhase.WaitingToRetry, _controller.Current.Phase);
+    }
+
+    [Fact]
+    public void A_refusal_while_waiting_for_the_phone_ends_the_wait()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+        _time.Advance(TimeSpan.FromMinutes(2));
+
+        _factory.Latest.CompleteOpen(LinkOpenStatus.DeniedBySystem);
+
+        WaitFor(ConnectionPhase.Failed);
+        Assert.Equal(ConnectionFailure.DeniedBySystem, _controller.Current.Failure);
+        var links = _factory.Links.Count;
+        _time.Advance(TimeSpan.FromHours(24));
+        Assert.Equal(links, _factory.Links.Count);
+    }
+
+    [Fact]
+    public void The_last_failed_retry_is_not_mistaken_for_the_phone_returning()
+    {
+        ConnectAndOpen(Phone);
+        ExhaustRetries();
+
+        // Windows reports the phone "connected" for a moment because of the attempt that just failed.
+        _controller.NotifyPhoneSeen();
+
+        Assert.Equal(6, _factory.Links.Count);
+        Assert.Equal(ConnectionPhase.WaitingForPhone, _controller.Current.Phase);
     }
 
     [Fact]
@@ -626,6 +887,20 @@ public sealed class ConnectionControllerTests : IDisposable
     {
         _controller.Dispose();
         _controller = Create(policy);
+    }
+
+    /// <summary>Drops the current link and fails all five default retries, leaving the controller past its retry limit.</summary>
+    private void ExhaustRetries()
+    {
+        _factory.Latest.RaiseClosed();
+        foreach (var seconds in new[] { 2, 4, 8, 16, 32 })
+        {
+            WaitFor(ConnectionPhase.WaitingToRetry);
+            _time.Advance(TimeSpan.FromSeconds(seconds));
+            _factory.Latest.CompleteOpen(LinkOpenStatus.TimedOut);
+        }
+
+        WaitFor(ConnectionPhase.WaitingForPhone);
     }
 
     private FakeLink ConnectAndOpen(AudioSource device)

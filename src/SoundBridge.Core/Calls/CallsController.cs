@@ -23,6 +23,7 @@ public sealed class CallsController : IDisposable
     private readonly ICallTransportFactory _factory;
     private readonly ILog _log;
     private readonly HashSet<string> _handledCalls = new(StringComparer.Ordinal);
+    private readonly System.Collections.Concurrent.ConcurrentQueue<CallAction> _actions = new();
 
     // Wishes, written by callers under the lock.
     private bool _enabled;
@@ -37,6 +38,7 @@ public sealed class CallsController : IDisposable
     // Owned by the worker, except that Dispose may release the transport.
     private ICallTransport? _transport;
     private AudioSource? _claimedPhone;
+    private bool _callWasLive;
     private CallsSnapshot _current = CallsSnapshot.Off;
 
     public CallsController(ICallTransportFactory factory, ILog? log = null)
@@ -48,7 +50,10 @@ public sealed class CallsController : IDisposable
     /// <summary>Raised after the state changes, on whichever thread caused it. Read <see cref="Current"/>.</summary>
     public event EventHandler? Changed;
 
-    /// <summary>Raised once each time the phone's last active call finishes, on a background thread.</summary>
+    /// <summary>
+    /// Raised once each time a call that was actually talked on finishes, on a background thread. A call that
+    /// only rang (missed or declined) does not raise it.
+    /// </summary>
     public event EventHandler? CallEnded;
 
     public CallsSnapshot Current
@@ -100,6 +105,21 @@ public sealed class CallsController : IDisposable
         Kick();
     }
 
+    /// <summary>Answers the ringing call from this PC.</summary>
+    public void Answer() => Request(CallAction.Answer);
+
+    /// <summary>Declines the ringing call.</summary>
+    public void Decline() => Request(CallAction.Decline);
+
+    /// <summary>Ends the call in progress.</summary>
+    public void HangUp() => Request(CallAction.HangUp);
+
+    /// <summary>Mutes or unmutes this side of the call in progress.</summary>
+    public void SetMuted(bool muted) => Request(muted ? CallAction.Mute : CallAction.Unmute);
+
+    /// <summary>Moves the call in progress to this PC, or back to the phone.</summary>
+    public void MoveCall(bool toPc) => Request(toPc ? CallAction.MoveToPc : CallAction.MoveToPhone);
+
     public void Dispose()
     {
         ICallTransport? transport;
@@ -119,6 +139,20 @@ public sealed class CallsController : IDisposable
 
         // Released here, synchronously, so the role is given back even when the process is about to end.
         ReleaseTransport(transport, "shutting down");
+    }
+
+    private void Request(CallAction action)
+    {
+        lock (_gate)
+        {
+            if (_disposed)
+            {
+                return;
+            }
+        }
+
+        _actions.Enqueue(action);
+        Kick();
     }
 
     private void Kick()
@@ -187,6 +221,7 @@ public sealed class CallsController : IDisposable
 
         if (!wanted)
         {
+            _actions.Clear();
             Publish(new CallsSnapshot
             {
                 State = !enabled ? CallsState.Off : support != CallSupport.Available ? CallsState.Unavailable : CallsState.NoPhone,
@@ -240,6 +275,7 @@ public sealed class CallsController : IDisposable
         {
             _log.Warn(Category, $"Could not claim the hands-free role: {result.Status}{(result.Detail is null ? string.Empty : " - " + result.Detail)}");
             transport.Dispose();
+            _actions.Clear();
             Publish(new CallsSnapshot { State = CallsState.Failed, Failure = result.Status, FailureDetail = result.Detail });
             return false;
         }
@@ -265,6 +301,16 @@ public sealed class CallsController : IDisposable
     {
         var calls = await transport.GetActiveCallsAsync(CancellationToken.None).ConfigureAwait(false);
 
+        if (!_actions.IsEmpty)
+        {
+            while (_actions.TryDequeue(out var action))
+            {
+                await PerformAsync(transport, action, calls).ConfigureAwait(false);
+            }
+
+            calls = await transport.GetActiveCallsAsync(CancellationToken.None).ConfigureAwait(false);
+        }
+
         _handledCalls.IntersectWith(calls.Select(call => call.Id));
 
         foreach (var call in calls)
@@ -276,12 +322,11 @@ public sealed class CallsController : IDisposable
             }
 
             _log.Info(Category, "A call is in progress on the phone; moving its audio to this PC.");
-            var moved = await transport.MoveToPcAsync(call.Id, CancellationToken.None).ConfigureAwait(false);
+            var moved = await transport.MoveAsync(call.Id, toPc: true, CancellationToken.None).ConfigureAwait(false);
             _log.Info(Category, moved ? "Windows accepted the move." : "Windows did not move the call.");
         }
 
-        var current = calls.FirstOrDefault(call => call.Phase is CallPhase.Talking or CallPhase.Held)
-            ?? calls.FirstOrDefault();
+        var current = PickCurrent(calls);
         var wasInCall = Current.State == CallsState.InCall;
 
         if (current is not null)
@@ -291,16 +336,65 @@ public sealed class CallsController : IDisposable
                 _log.Info(Category, $"The phone has a call ({current.Phase}).");
             }
 
-            Publish(new CallsSnapshot { State = CallsState.InCall, CallOnPc = current.OnPc });
+            _callWasLive |= current.Phase is CallPhase.Talking or CallPhase.Held;
+            Publish(new CallsSnapshot
+            {
+                State = CallsState.InCall,
+                LinkUp = true,
+                CallOnPc = current.OnPc,
+                CallPhase = current.Phase,
+                CallMuted = current.Muted,
+                Caller = current.Caller,
+            });
             return;
         }
 
-        Publish(new CallsSnapshot { State = CallsState.Ready });
+        Publish(new CallsSnapshot { State = CallsState.Ready, LinkUp = transport.LinkUp });
         if (wasInCall)
         {
-            _log.Info(Category, "The call ended.");
-            Raise(CallEnded);
+            var wasLive = _callWasLive;
+            _callWasLive = false;
+            _log.Info(Category, wasLive ? "The call ended." : "The call ended without being answered.");
+            if (wasLive)
+            {
+                Raise(CallEnded);
+            }
         }
+    }
+
+    /// <summary>The call the user means: the one being talked on, else whichever is there (ringing, dialling).</summary>
+    private static ActiveCall? PickCurrent(IReadOnlyList<ActiveCall> calls) =>
+        calls.FirstOrDefault(call => call.Phase is CallPhase.Talking or CallPhase.Held) ?? calls.FirstOrDefault();
+
+    private async Task PerformAsync(ICallTransport transport, CallAction action, IReadOnlyList<ActiveCall> calls)
+    {
+        var ringing = calls.FirstOrDefault(call => call.Phase == CallPhase.Incoming);
+        var target = action is CallAction.Answer or CallAction.Decline ? ringing : PickCurrent(calls);
+        if (target is null)
+        {
+            _log.Info(Category, $"Ignored '{action}': there is no call it applies to.");
+            return;
+        }
+
+        // Moving a call by hand settles where it should be; it is not moved again automatically.
+        if (action is CallAction.MoveToPc or CallAction.MoveToPhone)
+        {
+            _handledCalls.Add(target.Id);
+        }
+
+        var done = action switch
+        {
+            CallAction.Answer => await transport.AnswerAsync(target.Id, CancellationToken.None).ConfigureAwait(false),
+            CallAction.Decline => await transport.DeclineAsync(target.Id, CancellationToken.None).ConfigureAwait(false),
+            CallAction.HangUp => await transport.EndAsync(target.Id, CancellationToken.None).ConfigureAwait(false),
+            CallAction.Mute => await transport.SetMutedAsync(target.Id, muted: true, CancellationToken.None).ConfigureAwait(false),
+            CallAction.Unmute => await transport.SetMutedAsync(target.Id, muted: false, CancellationToken.None).ConfigureAwait(false),
+            CallAction.MoveToPc => await transport.MoveAsync(target.Id, toPc: true, CancellationToken.None).ConfigureAwait(false),
+            CallAction.MoveToPhone => await transport.MoveAsync(target.Id, toPc: false, CancellationToken.None).ConfigureAwait(false),
+            _ => false,
+        };
+
+        _log.Info(Category, $"Call action '{action}': {(done ? "accepted by Windows" : "not carried out")}.");
     }
 
     private void Raise(EventHandler? handler)
@@ -325,6 +419,7 @@ public sealed class CallsController : IDisposable
             _transport = null;
             _claimedPhone = null;
             _handledCalls.Clear();
+            _callWasLive = false;
             return transport;
         }
     }
@@ -346,6 +441,17 @@ public sealed class CallsController : IDisposable
         {
             _log.Warn(Category, $"Releasing the hands-free role failed: {ex.Message}");
         }
+    }
+
+    private enum CallAction
+    {
+        Answer,
+        Decline,
+        HangUp,
+        Mute,
+        Unmute,
+        MoveToPc,
+        MoveToPhone,
     }
 
     private void Publish(CallsSnapshot snapshot)

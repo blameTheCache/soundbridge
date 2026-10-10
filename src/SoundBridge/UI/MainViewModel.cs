@@ -97,6 +97,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly CallsController _calls;
     private readonly AudioSourceWatcher _watcher;
     private readonly BluetoothRadioMonitor _radio;
+    private readonly PhonePresenceMonitor _presence;
     private readonly SettingsStore _store;
     private readonly StartupRegistration _startup;
     private readonly ThemeManager _themes;
@@ -125,6 +126,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         CallsController calls,
         AudioSourceWatcher watcher,
         BluetoothRadioMonitor radio,
+        PhonePresenceMonitor presence,
         SettingsStore store,
         AppSettings settings,
         StartupRegistration startup,
@@ -137,6 +139,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _calls = calls;
         _watcher = watcher;
         _radio = radio;
+        _presence = presence;
         _store = store;
         _settings = settings;
         _startup = startup;
@@ -167,12 +170,18 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         KeepInTrayCommand = new RelayCommand(() => AnswerClosePrompt(closeToTray: true));
         ExitOnCloseCommand = new RelayCommand(() => AnswerClosePrompt(closeToTray: false));
         DismissClosePromptCommand = new RelayCommand(() => IsClosePromptOpen = false);
+        AnswerCallCommand = new RelayCommand(() => CallAction("Answer", _calls.Answer));
+        DeclineCallCommand = new RelayCommand(() => CallAction("Decline", _calls.Decline));
+        HangUpCommand = new RelayCommand(() => CallAction("Hang up", _calls.HangUp));
+        ToggleMuteCommand = new RelayCommand(() => CallAction(CallMuteText, () => _calls.SetMuted(!_calls.Current.CallMuted)));
+        ToggleCallDeviceCommand = new RelayCommand(() => CallAction(CallMoveText, () => _calls.MoveCall(!_calls.Current.CallOnPc)));
 
         _countdown = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => RefreshPresentation(), dispatcher) { IsEnabled = false };
 
         _controller.Changed += OnConnectionChanged;
         _calls.Changed += OnCallsChanged;
         _calls.CallEnded += OnCallEnded;
+        _presence.Seen += OnPhoneSeen;
         _watcher.Changed += OnSourcesChanged;
         _radio.Changed += OnRadioChanged;
     }
@@ -208,6 +217,16 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public ICommand ExitOnCloseCommand { get; }
 
     public ICommand DismissClosePromptCommand { get; }
+
+    public ICommand AnswerCallCommand { get; }
+
+    public ICommand DeclineCallCommand { get; }
+
+    public ICommand HangUpCommand { get; }
+
+    public ICommand ToggleMuteCommand { get; }
+
+    public ICommand ToggleCallDeviceCommand { get; }
 
     public DeviceItem? SelectedDevice
     {
@@ -342,6 +361,20 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    /// <summary>After the quick retries, go on checking for the phone instead of giving up.</summary>
+    public bool KeepWaitingForPhone
+    {
+        get => _settings.KeepWaitingForPhone;
+        set
+        {
+            if (Save(_settings with { KeepWaitingForPhone = value }))
+            {
+                _controller.SetPolicy(_settings.ToReconnectPolicy());
+                OnPropertyChanged();
+            }
+        }
+    }
+
     /// <summary>Take the hands-free role so calls answered on the phone move to this PC.</summary>
     public bool RouteCalls
     {
@@ -364,6 +397,44 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public string CallsStatusText => ConnectionPresenter.DescribeCalls(_calls.Current, _calls.Support);
 
     public bool ShowCallsLine => RouteCalls;
+
+    /// <summary>Show the Answer / Decline prompt when the phone rings.</summary>
+    public bool ShowCallPrompt
+    {
+        get => _settings.ShowCallPrompt;
+        set
+        {
+            if (Save(_settings with { ShowCallPrompt = value }))
+            {
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public bool IsInCall => _calls.Current.State == CallsState.InCall;
+
+    public bool IsCallRinging => IsInCall && _calls.Current.CallPhase == CallPhase.Incoming;
+
+    /// <summary>A call that has been answered or is being dialled: the one hang up, mute and move apply to.</summary>
+    public bool IsCallLive => IsInCall && !IsCallRinging;
+
+    public string CallTitle => _calls.Current switch
+    {
+        { CallPhase: CallPhase.Incoming } => "Incoming call",
+        { CallPhase: CallPhase.Dialing } => "Calling…",
+        { CallPhase: CallPhase.Held } => "Call on hold",
+        { CallOnPc: true, CallMuted: true } => "Call on this PC, muted",
+        { CallOnPc: true } => "Call on this PC",
+        _ => "Call on the phone",
+    };
+
+    public string CallCaller => _calls.Current.Caller ?? string.Empty;
+
+    public string CallCallerOrUnknown => _calls.Current.Caller ?? "Unknown caller";
+
+    public string CallMuteText => _calls.Current.CallMuted ? "Unmute" : "Mute";
+
+    public string CallMoveText => _calls.Current.CallOnPc ? "Move to phone" : "Move to this PC";
 
     public bool CloseToTray
     {
@@ -396,6 +467,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         await _watcher.RefreshAsync();
         SyncDevices();
         ApplyCallRouting();
+        _ = _presence.WatchAsync(_target);
 
         // A new session starts each time the app starts. This is the only automatic connect that does not
         // follow an established connection, and it is the documented point where a manual disconnect from a
@@ -439,6 +511,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _controller.Changed -= OnConnectionChanged;
         _calls.Changed -= OnCallsChanged;
         _calls.CallEnded -= OnCallEnded;
+        _presence.Seen -= OnPhoneSeen;
         _watcher.Changed -= OnSourcesChanged;
         _radio.Changed -= OnRadioChanged;
     }
@@ -549,6 +622,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         Save(_settings with { PreferredDeviceId = source.Id, PreferredDeviceName = source.Name });
         _log.Info(Category, $"Preferred phone is now '{source.Name}'.");
         ApplyCallRouting();
+        _ = _presence.WatchAsync(_target);
         RefreshPresentation();
     }
 
@@ -577,7 +651,34 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         RefreshPresentation();
     });
 
-    private void OnCallsChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(() => OnPropertyChanged(nameof(CallsStatusText)));
+    private void OnCallsChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(() =>
+    {
+        OnPropertyChanged(nameof(CallsStatusText));
+        OnPropertyChanged(nameof(IsInCall));
+        OnPropertyChanged(nameof(IsCallLive));
+        OnPropertyChanged(nameof(CallTitle));
+        OnPropertyChanged(nameof(CallCaller));
+        OnPropertyChanged(nameof(CallCallerOrUnknown));
+        OnPropertyChanged(nameof(CallMuteText));
+        OnPropertyChanged(nameof(CallMoveText));
+
+        // Last, because the app shows or hides the incoming-call prompt on this one.
+        OnPropertyChanged(nameof(IsCallRinging));
+    });
+
+    /// <summary>The phone came up on Bluetooth: resume a wait for it, and bring the calls link up if it is down.</summary>
+    private void OnPhoneSeen(object? sender, EventArgs e)
+    {
+        _controller.NotifyPhoneSeen();
+        _calls.NotifyPhoneReachable();
+    }
+
+    private void CallAction(string name, Action action)
+    {
+        // The caller's name or number is deliberately not part of this line.
+        _log.Info(Category, $"Call action requested: {name}.");
+        action();
+    }
 
     /// <summary>
     /// After a call Windows keeps reporting the music link as open but plays nothing from it, and the phone
@@ -696,6 +797,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 : snapshot.Phase switch
                 {
                     ConnectionPhase.Connected => "Connected",
+                    ConnectionPhase.Connecting when snapshot.BackgroundCheck => "Checking…",
+                    ConnectionPhase.WaitingForPhone => "Waiting for phone",
                     ConnectionPhase.Connecting when snapshot.RetryAttempt == 0 => "Connecting…",
                     ConnectionPhase.WaitingForBluetooth => "Waiting for Bluetooth",
                     _ => "Reconnecting…",

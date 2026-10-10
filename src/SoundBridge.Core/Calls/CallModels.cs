@@ -11,8 +11,11 @@ public enum CallPhase
     Other,
 }
 
-/// <summary>A call Windows reports on the phone's line. <see cref="OnPc"/> is true when its audio is on this PC.</summary>
-public sealed record ActiveCall(string Id, CallPhase Phase, bool OnPc);
+/// <summary>
+/// A call Windows reports on the phone's line. <see cref="OnPc"/> is true when its audio is on this PC.
+/// <see cref="Caller"/> is the name or number the phone supplied, if any; it is shown, never logged.
+/// </summary>
+public sealed record ActiveCall(string Id, CallPhase Phase, bool OnPc, bool Muted = false, string? Caller = null);
 
 public enum CallClaimStatus
 {
@@ -49,6 +52,9 @@ public interface ICallTransport : IDisposable
     /// <summary>True when Windows currently allows a call's audio to be moved to this PC.</summary>
     bool CanRouteToPc { get; }
 
+    /// <summary>True while the hands-free link to the phone is actually connected, not merely registered.</summary>
+    bool LinkUp { get; }
+
     Task<CallClaimResult> ClaimAsync(CancellationToken cancellationToken);
 
     /// <summary>Asks Windows to bring the hands-free link up. Best effort; the phone may also do so itself.</summary>
@@ -56,7 +62,16 @@ public interface ICallTransport : IDisposable
 
     Task<IReadOnlyList<ActiveCall>> GetActiveCallsAsync(CancellationToken cancellationToken);
 
-    Task<bool> MoveToPcAsync(string callId, CancellationToken cancellationToken);
+    /// <summary>Moves a call's audio to this PC, or back to the phone.</summary>
+    Task<bool> MoveAsync(string callId, bool toPc, CancellationToken cancellationToken);
+
+    Task<bool> AnswerAsync(string callId, CancellationToken cancellationToken);
+
+    Task<bool> DeclineAsync(string callId, CancellationToken cancellationToken);
+
+    Task<bool> EndAsync(string callId, CancellationToken cancellationToken);
+
+    Task<bool> SetMutedAsync(string callId, bool muted, CancellationToken cancellationToken);
 }
 
 public interface ICallTransportFactory
@@ -79,7 +94,10 @@ public enum CallsState
 
     Starting,
 
-    /// <summary>The role is held; calls will be moved to this PC as they are answered.</summary>
+    /// <summary>
+    /// The role is held. Calls are moved to this PC as they are answered, provided the phone is connected:
+    /// see <see cref="CallsSnapshot.LinkUp"/>.
+    /// </summary>
     Ready,
 
     InCall,
@@ -99,6 +117,20 @@ public sealed record CallsSnapshot
 
     public string? FailureDetail { get; init; }
 
+    /// <summary>
+    /// Meaningful while <see cref="State"/> is Ready: false when the role is held but the phone's hands-free
+    /// link is not connected, so no call can reach this PC yet.
+    /// </summary>
+    public bool LinkUp { get; init; }
+
     /// <summary>Meaningful while <see cref="State"/> is InCall: whether the call's audio is on this PC.</summary>
     public bool CallOnPc { get; init; }
+
+    /// <summary>Meaningful while <see cref="State"/> is InCall.</summary>
+    public CallPhase CallPhase { get; init; } = CallPhase.Other;
+
+    public bool CallMuted { get; init; }
+
+    /// <summary>Name or number supplied by the phone for the current call. For display only.</summary>
+    public string? Caller { get; init; }
 }

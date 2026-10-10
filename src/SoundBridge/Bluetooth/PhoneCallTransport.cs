@@ -6,6 +6,7 @@ using SoundBridge.Core.Diagnostics;
 using SoundBridge.Platform;
 using Windows.ApplicationModel.Calls;
 using Windows.Devices.Enumeration;
+using Windows.Foundation;
 using Windows.Foundation.Metadata;
 
 namespace SoundBridge.Bluetooth;
@@ -53,6 +54,9 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
             }
         }
     }
+
+    /// <summary>Windows opens a phone line when the hands-free link connects and removes it when it drops.</summary>
+    public bool LinkUp => !_lines.IsEmpty;
 
     public async Task<CallClaimResult> ClaimAsync(CancellationToken cancellationToken)
     {
@@ -156,7 +160,7 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
 
                     Track(call);
                     seen.Add(call.CallId);
-                    active.Add(new ActiveCall(call.CallId, Map(status), call.AudioDevice == PhoneCallAudioDevice.LocalDevice));
+                    active.Add(new ActiveCall(call.CallId, Map(status), call.AudioDevice == PhoneCallAudioDevice.LocalDevice, call.IsMuted, CallerOf(call)));
                 }
             }
             catch (Exception ex)
@@ -173,7 +177,23 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
         return active;
     }
 
-    public async Task<bool> MoveToPcAsync(string callId, CancellationToken cancellationToken)
+    public Task<bool> MoveAsync(string callId, bool toPc, CancellationToken cancellationToken) =>
+        OperateAsync(callId, toPc ? "move the call to this PC" : "move the call to the phone",
+            call => call.ChangeAudioDeviceAsync(toPc ? PhoneCallAudioDevice.LocalDevice : PhoneCallAudioDevice.RemoteDevice), cancellationToken);
+
+    public Task<bool> AnswerAsync(string callId, CancellationToken cancellationToken) =>
+        OperateAsync(callId, "answer the call", call => call.AcceptIncomingAsync(), cancellationToken);
+
+    public Task<bool> DeclineAsync(string callId, CancellationToken cancellationToken) =>
+        OperateAsync(callId, "decline the call", call => call.RejectIncomingAsync(), cancellationToken);
+
+    public Task<bool> EndAsync(string callId, CancellationToken cancellationToken) =>
+        OperateAsync(callId, "end the call", call => call.EndAsync(), cancellationToken);
+
+    public Task<bool> SetMutedAsync(string callId, bool muted, CancellationToken cancellationToken) =>
+        OperateAsync(callId, muted ? "mute the call" : "unmute the call", call => muted ? call.MuteAsync() : call.UnmuteAsync(), cancellationToken);
+
+    private async Task<bool> OperateAsync(string callId, string what, Func<PhoneCall, IAsyncOperation<PhoneCallOperationStatus>> operation, CancellationToken cancellationToken)
     {
         if (!_calls.TryGetValue(callId, out var call))
         {
@@ -182,17 +202,17 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
 
         try
         {
-            var outcome = await call.ChangeAudioDeviceAsync(PhoneCallAudioDevice.LocalDevice).AsTask(cancellationToken).WaitAsync(Patience, cancellationToken).ConfigureAwait(false);
+            var outcome = await operation(call).AsTask(cancellationToken).WaitAsync(Patience, cancellationToken).ConfigureAwait(false);
             if (outcome != PhoneCallOperationStatus.Succeeded)
             {
-                log.Warn(Category, $"Windows answered the request to move the call with {outcome}.");
+                log.Warn(Category, $"Windows answered the request to {what} with {outcome}.");
             }
 
             return outcome == PhoneCallOperationStatus.Succeeded;
         }
         catch (Exception ex)
         {
-            log.Warn(Category, $"Moving the call failed: {Describe(ex)}");
+            log.Warn(Category, $"Could not {what}: {Describe(ex)}");
             return false;
         }
     }
@@ -333,6 +353,23 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
         {
             call.StatusChanged += OnCallChanged;
             call.AudioDeviceChanged += OnCallChanged;
+            call.IsMutedChanged += OnCallChanged;
+        }
+    }
+
+    /// <summary>The name the phone supplied, else the number. Used on screen only; never written to the log.</summary>
+    private static string? CallerOf(PhoneCall call)
+    {
+        try
+        {
+            var info = call.GetPhoneCallInfo();
+            return !string.IsNullOrWhiteSpace(info.DisplayName) ? info.DisplayName.Trim()
+                : !string.IsNullOrWhiteSpace(info.PhoneNumber) ? info.PhoneNumber.Trim()
+                : null;
+        }
+        catch (Exception)
+        {
+            return null;
         }
     }
 
@@ -344,6 +381,7 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
             {
                 call.StatusChanged -= OnCallChanged;
                 call.AudioDeviceChanged -= OnCallChanged;
+                call.IsMutedChanged -= OnCallChanged;
             }
             catch (Exception)
             {

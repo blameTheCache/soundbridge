@@ -211,6 +211,10 @@ public sealed class CallsControllerTests : IDisposable
         var transport = Ready();
         transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: false));
         Until(() => transport.Moved.Contains("call-1"));
+
+        // Wait until the controller has finished with the first call; "Ready" alone would also be true
+        // before it had even noticed the call.
+        Until(() => _controller.Current is { State: CallsState.InCall, CallOnPc: true });
         transport.SetCalls();
         WaitFor(CallsState.Ready);
 
@@ -255,6 +259,62 @@ public sealed class CallsControllerTests : IDisposable
     }
 
     [Fact]
+    public void A_call_that_only_rang_does_not_count_as_an_ended_call()
+    {
+        var transport = Ready();
+        var ended = 0;
+        _controller.CallEnded += (_, _) => Interlocked.Increment(ref ended);
+
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Incoming, OnPc: false));
+        WaitFor(CallsState.InCall);
+        transport.SetCalls();
+        WaitFor(CallsState.Ready);
+        Settle();
+
+        Assert.Equal(0, ended);
+        Assert.True(_log.Contains("without being answered"));
+    }
+
+    [Fact]
+    public void Ready_says_whether_the_phone_is_actually_connected()
+    {
+        _controller.Configure(enabled: true, Phone);
+        WaitFor(CallsState.Ready);
+        var transport = _factory.Transports[0];
+        Assert.True(_controller.Current.LinkUp);
+
+        transport.LinkUp = false;
+        transport.RaiseChanged();
+        Until(() => _controller.Current is { State: CallsState.Ready, LinkUp: false });
+
+        transport.LinkUp = true;
+        transport.RaiseChanged();
+        Until(() => _controller.Current is { State: CallsState.Ready, LinkUp: true });
+    }
+
+    [Fact]
+    public void A_button_pressed_while_the_claim_fails_does_not_act_on_a_later_call()
+    {
+        _factory.NextClaim = new CallClaimResult(CallClaimStatus.Failed);
+        _controller.Configure(enabled: true, Phone);
+        _controller.HangUp();
+        WaitFor(CallsState.Failed);
+        Settle();
+
+        // The next claim succeeds with a call already in progress, so the very first look at the phone's
+        // calls is where a leftover "hang up" would strike.
+        _factory.NextClaim = new CallClaimResult(CallClaimStatus.Claimed);
+        _factory.InitialCalls = [new ActiveCall("call-1", CallPhase.Talking, OnPc: true)];
+        _controller.NotifyPhoneReachable();
+        WaitFor(CallsState.InCall);
+        Settle();
+
+        var transport = _factory.Transports[^1];
+        Assert.DoesNotContain("end:call-1", transport.Actions);
+        Assert.Equal(CallsState.InCall, _controller.Current.State);
+    }
+
+    [Fact]
     public void Switching_off_during_a_call_does_not_report_the_call_as_ended()
     {
         var transport = Ready();
@@ -268,6 +328,107 @@ public sealed class CallsControllerTests : IDisposable
         WaitFor(CallsState.Off);
         Settle();
         Assert.Equal(0, ended);
+    }
+
+    [Fact]
+    public void A_ringing_call_can_be_answered_from_the_pc_and_then_lands_on_the_pc()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Incoming, OnPc: false, Caller: "Sam"));
+        Until(() => _controller.Current is { State: CallsState.InCall, CallPhase: CallPhase.Incoming, Caller: "Sam" });
+
+        _controller.Answer();
+
+        Until(() => transport.Actions.Contains("answer:call-1"));
+        Until(() => _controller.Current is { CallPhase: CallPhase.Talking, CallOnPc: true });
+        Assert.Contains("to-pc:call-1", transport.Actions);
+    }
+
+    [Fact]
+    public void A_ringing_call_can_be_declined_from_the_pc()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Incoming, OnPc: false));
+        WaitFor(CallsState.InCall);
+
+        _controller.Decline();
+
+        Until(() => transport.Actions.Contains("decline:call-1"));
+        WaitFor(CallsState.Ready);
+        Assert.Empty(transport.Moved);
+    }
+
+    [Fact]
+    public void Answer_and_decline_only_apply_to_a_ringing_call()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        WaitFor(CallsState.InCall);
+
+        _controller.Answer();
+        _controller.Decline();
+
+        Until(() => _log.Contains("Ignored 'Decline'"));
+        Assert.Empty(transport.Actions);
+        Assert.Equal(CallsState.InCall, _controller.Current.State);
+    }
+
+    [Fact]
+    public void The_call_in_progress_can_be_hung_up()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        WaitFor(CallsState.InCall);
+
+        _controller.HangUp();
+
+        Until(() => transport.Actions.Contains("end:call-1"));
+        WaitFor(CallsState.Ready);
+    }
+
+    [Fact]
+    public void The_call_in_progress_can_be_muted_and_unmuted()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        WaitFor(CallsState.InCall);
+
+        _controller.SetMuted(true);
+        Until(() => _controller.Current.CallMuted);
+
+        _controller.SetMuted(false);
+        Until(() => !_controller.Current.CallMuted);
+        Assert.Equal(["mute:call-1", "unmute:call-1"], transport.Actions);
+    }
+
+    [Fact]
+    public void A_call_moved_to_the_phone_from_the_pc_stays_there()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        Until(() => _controller.Current.CallOnPc);
+
+        _controller.MoveCall(toPc: false);
+
+        Until(() => _controller.Current is { State: CallsState.InCall, CallOnPc: false });
+        transport.RaiseChanged();
+        Settle();
+        Assert.Equal(["to-phone:call-1"], transport.Actions);
+    }
+
+    [Fact]
+    public void Call_actions_are_ignored_when_there_is_no_call_or_routing_is_off()
+    {
+        _controller.HangUp();
+        Settle();
+        Assert.Empty(_factory.Transports);
+
+        var transport = Ready();
+        _controller.HangUp();
+        _controller.SetMuted(true);
+
+        Until(() => _log.Contains("Ignored 'Mute'"));
+        Assert.Empty(transport.Actions);
     }
 
     [Fact]
@@ -352,7 +513,8 @@ public sealed class CallsControllerTests : IDisposable
 internal sealed class FakeCallTransport(AudioSource phone, FakeCallTransportFactory owner) : ICallTransport
 {
     private readonly TaskCompletionSource<CallClaimResult> _heldClaim = new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private volatile IReadOnlyList<ActiveCall> _calls = [];
+    private readonly Lock _callsGate = new();
+    private volatile IReadOnlyList<ActiveCall> _calls = owner.InitialCalls;
     private int _claimCalls;
     private int _connectCalls;
     private int _disposeCalls;
@@ -362,6 +524,8 @@ internal sealed class FakeCallTransport(AudioSource phone, FakeCallTransportFact
     public AudioSource Phone { get; } = phone;
 
     public bool CanRouteToPc { get; set; } = true;
+
+    public bool LinkUp { get; set; } = true;
 
     public int ClaimCalls => _claimCalls;
 
@@ -394,15 +558,77 @@ internal sealed class FakeCallTransport(AudioSource phone, FakeCallTransportFact
 
     public Task<IReadOnlyList<ActiveCall>> GetActiveCallsAsync(CancellationToken cancellationToken) => Task.FromResult(_calls);
 
-    public Task<bool> MoveToPcAsync(string callId, CancellationToken cancellationToken)
+    public ConcurrentQueue<string> Actions { get; } = new();
+
+    public Task<bool> MoveAsync(string callId, bool toPc, CancellationToken cancellationToken)
     {
-        Moved.Enqueue(callId);
+        if (toPc)
+        {
+            Moved.Enqueue(callId);
+        }
+
+        Actions.Enqueue($"{(toPc ? "to-pc" : "to-phone")}:{callId}");
+        Replace(callId, call => call with { OnPc = toPc });
         return Task.FromResult(true);
+    }
+
+    public Task<bool> AnswerAsync(string callId, CancellationToken cancellationToken)
+    {
+        Actions.Enqueue($"answer:{callId}");
+        Replace(callId, call => call with { Phase = CallPhase.Talking });
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> DeclineAsync(string callId, CancellationToken cancellationToken)
+    {
+        Actions.Enqueue($"decline:{callId}");
+        Remove(callId);
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> EndAsync(string callId, CancellationToken cancellationToken)
+    {
+        Actions.Enqueue($"end:{callId}");
+        Remove(callId);
+        return Task.FromResult(true);
+    }
+
+    public Task<bool> SetMutedAsync(string callId, bool muted, CancellationToken cancellationToken)
+    {
+        Actions.Enqueue($"{(muted ? "mute" : "unmute")}:{callId}");
+        Replace(callId, call => call with { Muted = muted });
+        return Task.FromResult(true);
+    }
+
+    // Like Windows, the fake reports every change it makes, which is what prompts the controller to look again.
+    private void Replace(string callId, Func<ActiveCall, ActiveCall> change)
+    {
+        // Read and write as one step, or a list set by the test in between would be overwritten.
+        lock (_callsGate)
+        {
+            _calls = [.. _calls.Select(call => call.Id == callId ? change(call) : call)];
+        }
+
+        RaiseChanged();
     }
 
     public void SetCalls(params ActiveCall[] calls)
     {
-        _calls = calls;
+        lock (_callsGate)
+        {
+            _calls = calls;
+        }
+
+        RaiseChanged();
+    }
+
+    private void Remove(string callId)
+    {
+        lock (_callsGate)
+        {
+            _calls = [.. _calls.Where(call => call.Id != callId)];
+        }
+
         RaiseChanged();
     }
 
@@ -423,6 +649,9 @@ internal sealed class FakeCallTransportFactory : ICallTransportFactory
     public Exception? ThrowOnClaim { get; set; }
 
     public bool HoldClaims { get; set; }
+
+    /// <summary>Calls a newly created transport already has, as when the app starts during a call.</summary>
+    public IReadOnlyList<ActiveCall> InitialCalls { get; set; } = [];
 
     public IReadOnlyList<FakeCallTransport> Transports
     {

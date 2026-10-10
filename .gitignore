@@ -29,3 +29,5 @@ settings.json.*
 *.pfx
 *.snk
 *.key
+*.msix
+*.cer

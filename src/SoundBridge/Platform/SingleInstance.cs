@@ -21,11 +21,13 @@ internal sealed class SingleInstance : IDisposable
     /// <summary>
     /// Returns null when another instance already owns the session. That instance is asked to show its
     /// window unless <paramref name="showExisting"/> is false (a launch the user did not make).
+    /// <paramref name="scope"/> separates instances that must not see each other, such as a development
+    /// run with its own data folder beside the installed app.
     /// </summary>
-    public static SingleInstance? TryAcquire(bool showExisting)
+    public static SingleInstance? TryAcquire(bool showExisting, string scope = "")
     {
-        var mutex = new Mutex(initiallyOwned: true, MutexName, out var createdNew);
-        var activate = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, ActivateEventName);
+        var mutex = new Mutex(initiallyOwned: true, MutexName + scope, out var createdNew);
+        var activate = new EventWaitHandle(initialState: false, EventResetMode.AutoReset, ActivateEventName + scope);
         if (createdNew)
         {
             return new SingleInstance(mutex, activate);

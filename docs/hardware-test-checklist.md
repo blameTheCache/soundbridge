@@ -5,7 +5,9 @@ logic against a fake link (see the README). Work through this list on the target
 whose result differs.
 
 **Confirmed so far** (project owner, October 2026, one laptop and one phone): A1, B1 to B3, B6 and G1 to
-G3. **Still open:** everything else, in particular sections C to F and H. Steps B4 and B5 are observations
+G3, and F3 (a four-hour sleep after a manual disconnect: Windows delivered the suspend and resume
+notifications and the music link stayed disconnected). The session log also shows a dropped link recovering on the first retry twice (as in D1 and D2, though
+what caused the drops is not known). **Still open:** everything else, in particular sections C to F and H. Steps B4 and B5 are observations
 to record rather than pass/fail checks.
 
 **Setup used for the checklist:** Windows laptop, Android phone paired over Bluetooth, wired headphones on a
@@ -50,7 +52,11 @@ Settings → **Reconnect automatically** on, attempts = 5.
 |---|---------|--------|
 | D1 | While connected, turn Bluetooth off on the **phone**. | Within a few seconds: amber ring, "Reconnecting in N s", "Attempt 1 of 5 is next". |
 | D2 | Turn the phone's Bluetooth back on before the attempts run out. | A later attempt succeeds and the state returns to "Connected". Phone audio resumes in the headphones once you press play. |
-| D3 | Repeat D1 and leave the phone's Bluetooth off. | After attempt 5: "Couldn't reconnect … Stopped after 5 reconnection attempts." Nothing further happens until you click **Connect**. |
+| D3 | Repeat D1 and leave the phone's Bluetooth off. | After attempt 5: "Waiting for the phone". About every two minutes it briefly shows "Checking for the phone…" and returns to waiting. |
+| D3a | While it is waiting, turn the phone's Bluetooth back on. | It reconnects within two minutes without a click, sooner if Windows notices the phone first. The log shows either "was seen on Bluetooth; checking now" or a scheduled check succeeding. |
+| D3b | Turn **Keep waiting for the phone** off and repeat D3. | After attempt 5: "Couldn't reconnect … Stopped after 5 reconnection attempts." Nothing further happens until you click **Connect**. |
+| D3c | While it is waiting, click **Cancel**, then turn the phone's Bluetooth back on. | "Not connected", and it stays that way. |
+| D3d | While connected, disconnect this PC from the phone's own Bluetooth menu. Each time SoundBridge reconnects, do it again straight away. | After the third quick reconnection is closed, SoundBridge shows "Stopped reconnecting" and leaves the phone alone until you click **Connect**. |
 | D4 | Repeat D1, and during "Reconnecting in N s" click **Cancel**. | "Not connected". Wait two minutes with the phone's Bluetooth back on: it must **not** reconnect. |
 | D5 | Connect, click **Disconnect**, then turn the phone's Bluetooth off and on. | Stays "Not connected". |
 | D6 | Turn **Reconnect automatically** off, connect, then turn the phone's Bluetooth off. | "Connection lost" with no retries. |
@@ -102,14 +108,15 @@ Settings → **Reconnect automatically** on, attempts = 5.
 Install with `packaging\Install.ps1`, start SoundBridge from the Start menu, and turn on
 **Settings → Hear phone calls on this PC**. The status under the switch should read "Ready".
 
-**Confirmed so far** (project owner, October 2026): J1, J2, J3 and J7.
+**Confirmed so far** (project owner, October 2026): J1, J2, J3, J7, J12 and J13.
 
 | # | Do this | Expect |
 |---|---------|--------|
 | J1 | Turn the switch on, off, and on again. | Status goes "Ready" → "Off." → "Ready". The log shows the role being claimed, unregistered, and claimed again. |
+| J1a | With the switch on, turn the phone's Bluetooth off. | The status changes from "Ready" to saying the phone is not connected for calls. It returns to "Ready" when the phone is back. |
 | J2 | Have someone call the phone. Answer **on the phone**. | Within a second or two the caller's voice moves to the PC's headphones, and they can hear you through the PC's microphone. No window pops up on the PC. Status reads "Call in progress on this PC." |
 | J3 | Hang up. | Status returns to "Ready". The log shows "The call ended." |
-| J4 | Let a call ring without answering, then decline it on the phone. | Nothing moves to the PC. |
+| J4 | Let a call ring without answering, then decline it on the phone. | Nothing moves to the PC, and music that was playing is not interrupted by a reconnect. The log shows "The call ended without being answered." |
 | J5 | During a call on the PC, switch the audio back to the phone from the phone's call screen. | The call continues on the phone and SoundBridge does not pull it back. |
 | J6 | Place an **outgoing** call from the phone. | Once the other side answers, the call moves to the PC as in J2. Note what you hear while it is still ringing out. |
 | J7 | Take a call while phone music is playing through SoundBridge. | Music pauses for the call. A second or two after hanging up the status briefly shows "Connecting…", then "Connected", and the music is audible again without touching anything. The log shows "Reopening the link … a phone call ended". |
@@ -117,6 +124,14 @@ Install with `packaging\Install.ps1`, start SoundBridge from the Start menu, and
 | J9 | Exit SoundBridge from the tray, then take a call. | The call stays on the phone. Note whether Windows starts SoundBridge by itself. |
 | J10 | Run the plain `dist\SoundBridge\SoundBridge.exe` instead of the installed app. | The switch is disabled and the status explains that calls need the installed version. |
 | J11 | If callers say you sound quiet. | Windows Sound settings → your default communication microphone → check its input volume. |
+| J12 | With the SoundBridge window closed to the tray, have someone call. | A small prompt appears above the taskbar with the caller's name or number, **Answer** and **Decline**. It does not take keyboard focus from what you were doing. |
+| J13 | Click **Answer** on the prompt. | The call is answered without touching the phone and is heard on the PC. The prompt disappears. |
+| J14 | On another call, click **Decline**. | The phone stops ringing and the caller is rejected. |
+| J15 | During a call, open the window and use **Mute**, then **Unmute**. | The other side cannot hear you while muted. The strip reads "Call on this PC, muted". |
+| J16 | Use **Move to phone**, then **Move to this PC**. | The audio follows each time, and SoundBridge does not move it again on its own. |
+| J17 | Click **Hang up** (window or tray menu). | The call ends on the phone. Music, if connected, comes back as in J7. |
+| J18 | Click the **x** on the prompt while the phone rings. | The prompt goes away and the phone keeps ringing. |
+| J19 | Turn **Ask on this PC when the phone rings** off and take a call. | No prompt. The Answer and Decline buttons are still in the main window. |
 
 ## I. Persistence and appearance
 

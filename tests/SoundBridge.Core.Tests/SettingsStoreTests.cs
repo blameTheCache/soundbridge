@@ -46,6 +46,8 @@ public sealed class SettingsStoreTests : IDisposable
             TrayHintShown = true,
             StartHiddenAtSignIn = false,
             RouteCalls = true,
+            ShowCallPrompt = false,
+            KeepWaitingForPhone = false,
             Theme = "sand",
         };
 

@@ -20,6 +20,12 @@ public enum ConnectionPhase
     /// <summary>The Bluetooth radio is off; reconnection resumes when it comes back.</summary>
     WaitingForBluetooth,
 
+    /// <summary>
+    /// The quick retries ran out. The phone is checked for at a slow pace, and at once if it is seen, until
+    /// <see cref="ReconnectPolicy.WaitLimit"/> has passed.
+    /// </summary>
+    WaitingForPhone,
+
     /// <summary>The last attempt failed and nothing further is scheduled.</summary>
     Failed,
 }
@@ -32,6 +38,10 @@ public enum ConnectionFailure
     TimedOut,
     DeniedBySystem,
     ConnectionLost,
+
+    /// <summary>The link was restored several times and closed again each time, so reconnection stopped.</summary>
+    Unstable,
+
     Unknown,
 }
 
@@ -69,6 +79,9 @@ public sealed record ConnectionSnapshot
 
     /// <summary>True when <see cref="Phase"/> is Failed because every allowed retry was used.</summary>
     public bool RetriesExhausted { get; init; }
+
+    /// <summary>True while Connecting as one of the slow checks made from <see cref="ConnectionPhase.WaitingForPhone"/>.</summary>
+    public bool BackgroundCheck { get; init; }
 
     /// <summary>True while a link is open or the controller is working towards one.</summary>
     public bool IsActive => Phase is not (ConnectionPhase.Disconnected or ConnectionPhase.Failed);

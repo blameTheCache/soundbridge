@@ -16,7 +16,7 @@
   IgnorableNamespaces="uap uap13 desktop desktop6 rescap">
 
   <!-- A signed package must use the signing certificate's subject as Publisher. -->
-  <Identity Name="SoundBridge" Publisher="CN=SoundBridge" Version="0.2.0.0" ProcessorArchitecture="x64" />
+  <Identity Name="SoundBridge" Publisher="CN=SoundBridge" Version="0.3.0.0" ProcessorArchitecture="x64" />
 
   <Properties>
     <DisplayName>SoundBridge</DisplayName>

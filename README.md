@@ -7,15 +7,15 @@ built into Windows since Windows 10 version 2004. Windows mixes the phone's audi
 plays both on the current output device. Everything is local: no account, no cloud service, no phone app and
 no audio driver.
 
-On Windows 11 the installed version can also take **phone calls**: answer on the phone as usual, and the call
-moves to the PC's speaker or headphones and microphone.
+On Windows 11 the installed version can also take **phone calls**: answer on the phone or from a prompt on
+the PC, and the call moves to the PC's speaker or headphones and microphone.
 
-> **Status.** Connecting, simultaneous phone and laptop playback, disconnecting and tray operation have
-> been confirmed on real hardware (one laptop, one phone). Automatic reconnection, Bluetooth off/on and
-> sleep/resume are covered by automated tests but **have not yet been exercised on hardware**. Phone calls
-> through the app, and music coming back by itself after a call, have been confirmed on the same hardware.
-> See
-> [Verification](#verification) and the [hardware checklist](docs/hardware-test-checklist.md).
+> **Status.** Confirmed on real hardware (one laptop, one phone): connecting, simultaneous phone and laptop
+> playback, disconnecting, tray operation, recovery from a dropped link, phone calls answered on the phone
+> or from the PC's prompt, and music coming back by itself after a call. **Not yet exercised on hardware:**
+> declining, muting and hanging up from the PC (seen only with simulated calls), waiting for an out-of-reach
+> phone, Bluetooth off/on, and resuming an open music link after sleep. See [Verification](#verification) and the
+> [hardware checklist](docs/hardware-test-checklist.md).
 
 ## Requirements
 
@@ -24,8 +24,8 @@ moves to the PC's speaker or headphones and microphone.
 - [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) for the default build
   (or build self-contained, below).
 - No administrator rights for music.
-- For phone calls: Windows 11, and Developer Mode switched on so the app can be installed without a signing
-  certificate (switching Developer Mode on is the one step that asks for administrator consent).
+- For phone calls: Windows 11 and the installed version. Installing needs either Developer Mode switched on,
+  or a signed package whose certificate the PC trusts. Each asks for administrator consent once.
 
 ## Run
 
@@ -47,6 +47,19 @@ Windows only gives the Bluetooth hands-free role to an *installed* app, so calls
 
 Settings and logs are shared with the plain exe. `.\packaging\Install.ps1 -Uninstall` removes the
 installation; keep `dist\SoundBridge-package` where it is until then, because Windows runs it in place.
+
+**Without Developer Mode.** `.\packaging\Build-Msix.ps1` packs the same folder into a signed
+`dist\SoundBridge-<version>.msix` and writes `dist\SoundBridge.cer` beside it. It signs with a self-signed
+certificate that it creates in your personal certificate store the first time. On the PC that will run it,
+trust the certificate once from an elevated prompt, then install:
+
+```powershell
+Import-Certificate -FilePath .\SoundBridge.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage -Path .\SoundBridge-<version>.msix
+```
+
+A self-signed certificate only shows that packages come from the same key, not who made them; whoever
+installs has to decide to trust it.
 
 ## Build
 
@@ -76,6 +89,8 @@ dotnet run --project src/SoundBridge
 | Connected | Windows reports the audio link as open. | Disconnect |
 | Reconnecting in N s | An automatic retry is scheduled. | Cancel |
 | Waiting for Bluetooth | The PC's Bluetooth is off; reconnection resumes when it returns. | Cancel |
+| Waiting for the phone | The quick retries ran out; the phone is checked for every two minutes. | Cancel |
+| Checking for the phone… | One of those checks is in flight. | Cancel |
 | Couldn't connect / Connection lost | The last attempt failed and nothing is scheduled. | Connect |
 
 "Connected" means the link is open. SoundBridge cannot see whether the phone is actually playing, so it
@@ -89,9 +104,20 @@ With **Reconnect automatically** on, SoundBridge restores a link that it had est
 - the PC wakes from sleep,
 - the PC's Bluetooth is switched back on.
 
-Retries are bounded: 3, 5 or 10 attempts, waiting 2 s, 4 s, 8 s, 16 s, 32 s and then 60 s between them.
-When they run out it stops and says so. A connection you start by hand is not retried if its first attempt
-fails — you get the reason straight away. A refusal by Windows ("denied by system") is never retried.
+Quick retries come first: 3, 5 or 10 attempts, waiting 2 s, 4 s, 8 s, 16 s, 32 s and then 60 s between them.
+
+If the phone still does not answer, SoundBridge **waits for it**: it checks every two minutes, and at once
+when Windows reports the phone connecting over Bluetooth for any reason. This is still bounded. After 12
+hours it stops and says so, and **Cancel** ends it at any moment. Turn **Keep waiting for the phone** off to
+stop as soon as the quick retries run out instead.
+
+A connection you start by hand is not retried if its first attempt fails — you get the reason straight
+away. A refusal by Windows ("denied by system") is never retried.
+
+**If the phone keeps closing the link.** SoundBridge cannot tell a phone that wandered off from one whose
+owner picked another speaker or disconnected the PC on the phone. So it watches for the pattern instead: if
+a restored link is closed again within a minute, three times running, it stops with "Stopped reconnecting"
+and waits for you to click **Connect**. A link that holds for a minute counts as recovered.
 
 ### Intentional disconnects
 
@@ -107,16 +133,25 @@ for the first time is never connected automatically.
 
 With **Hear phone calls on this PC** on, SoundBridge registers the PC as the phone's hands-free device.
 
-- **Answer on the phone.** Windows 11 shows no incoming-call prompt for this, and SoundBridge does not add
-  one. As soon as the call is being talked on, SoundBridge asks Windows to move its audio to the PC.
+- **Answer on the phone or on the PC.** Windows 11 shows no incoming-call prompt of its own, so SoundBridge
+  shows a small one above the taskbar with **Answer** and **Decline** and the caller as the phone reports it
+  (turn it off under **Ask on this PC when the phone rings**). The same buttons are in the main window and
+  the tray menu. However the call is answered, SoundBridge asks Windows to move its audio to the PC as soon
+  as it is being talked on.
+- **During a call** the main window shows **Mute**, **Move to phone** / **Move to this PC** and **Hang up**;
+  the tray menu has **Hang up**.
+- The PC does not ring. The phone does.
 - **Audio devices.** Windows carries the call between the phone and its *default communication* speaker and
   microphone (Settings > System > Sound). SoundBridge does not handle the audio and cannot choose the devices.
-- **Each call is moved once.** If you send a call back to the phone from the phone's own call screen, it
-  stays there.
+- **Each call is moved once.** If you send a call back to the phone, from the phone's own call screen or
+  with **Move to phone**, it stays there.
 - **Ringing calls are left alone**, so declining or ignoring a call works as it always did.
 - **Music after a call.** When a call ends, Windows goes on reporting the music link as open but plays
   nothing from it, while the phone keeps "playing" into silence. SoundBridge therefore opens a fresh music
-  link about a second and a half after each call. Expect a brief gap before the music is back.
+  link about a second and a half after each call that was answered. Expect a brief gap before the music is
+  back. A call that only rang leaves the music link alone.
+- **Status.** "Ready" means the phone is connected for calls right now. If the role is held but the phone
+  is not connected, the status says so instead.
 - The role is held only while SoundBridge runs with the switch on. Switching it off, or exiting, gives it back.
 - Windows starts the installed app by itself when a call arrives. If SoundBridge is already running, that
   extra launch ends at once without showing anything.
@@ -140,7 +175,8 @@ With **Hear phone calls on this PC** on, SoundBridge registers the PC as the pho
 | Logs | `%LOCALAPPDATA%\SoundBridge\logs\soundbridge-YYYYMMDD.log` (7 days kept, 2 MB per file) |
 
 Logs record connection events, errors and the actions you take. They contain device names and Windows device
-IDs (which include Bluetooth addresses), and they never leave the PC. Audio does not pass through the
+IDs (which include Bluetooth addresses), and they never leave the PC. A caller's name or number is shown on
+screen while the phone rings and is never written to the log. Audio does not pass through the
 SoundBridge process, so it cannot be logged or recorded.
 
 ## Architecture
@@ -160,15 +196,17 @@ src/SoundBridge.Core        no Windows APIs; fully unit-tested
 
 src/SoundBridge             the Windows app
   Bluetooth/                BluetoothAudioLink (AudioPlaybackConnection), AudioSourceWatcher (DeviceWatcher),
-                            BluetoothRadioMonitor, PhoneCallTransport (PhoneLineTransportDevice)
+                            BluetoothRadioMonitor, PhoneCallTransport (PhoneLineTransportDevice),
+                            PhonePresenceMonitor (BluetoothDevice connection status)
   Platform/                 TrayIcon (Shell_NotifyIcon), StartupRegistration (Run key or startup task),
                             PowerMonitor, SingleInstance, AppIdentity (packaged or not, why started)
-  UI/                       MainWindow, MainViewModel, ConnectionPresenter, ThemeManager, Styles
+  UI/                       MainWindow, CallPromptWindow, MainViewModel, ConnectionPresenter,
+                            ThemeManager, Styles
   App.xaml.cs               composition root
 
 tests/SoundBridge.Core.Tests   xUnit
 tools/IconGen                  regenerates Assets/app.ico from the drawing code the tray icon uses
-packaging/                     AppxManifest.xml, logos and Install.ps1 for the installed version
+packaging/                     AppxManifest.xml, logos, Install.ps1 (Developer Mode) and Build-Msix.ps1 (signed)
 ```
 
 **Connection control.** `ConnectionController` is the only owner of the audio link. Its state is an immutable
@@ -196,7 +234,7 @@ threads and never depends on the UI thread.
 
 ### Automated (run on every `build.ps1`)
 
-84 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
+108 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
 
 - duplicate connect requests while connecting or connected start nothing new;
 - manual disconnect cancels an in-flight attempt, ignores its late success, cancels a pending retry, and is
@@ -210,7 +248,14 @@ threads and never depends on the UI thread.
   refused claim is reported and retried only when there is a new reason to; a call being talked on at the
   phone is moved once, a ringing call is not, and a call sent back to the phone is not pulled again;
 - reopening the music link: only an established link is reopened, never one the user disconnected, and a
-  reopen that fails is recovered like any dropped link.
+  reopen that fails is recovered like any dropped link;
+- waiting for the phone: entered when the quick retries run out, checked at the slow interval and at once
+  on a sighting, ended by the 12-hour limit, by a manual disconnect, and by turning the option off;
+- call actions: answer and decline apply only to a ringing call; hang up, mute and move to the call in
+  progress; a call moved to the phone by hand is not pulled back; a button pressed while call routing is
+  failing never acts on a later call;
+- a link that is restored and closes again within a minute, three times running, ends reconnection, while
+  restored links that hold do not count against it.
 
 As a check on the tests themselves, seven deliberate faults were introduced into the controller one at a
 time; six were caught, and the seventh (not cancelling the timer on disconnect) is harmless because a second
@@ -246,7 +291,17 @@ By the project owner in October 2026, on the same setup, running Windows 11:
 - **Confirmed after that change:** a third call, with the music link reopened automatically a second and a
   half after hanging up and reported open again half a second later. The owner reports it working, and the
   log shows no manual reconnect afterwards.
-- **Not yet done:** outgoing calls, and a call arriving while SoundBridge is not running.
+- **Recovery from a dropped link:** the same session's log shows the music link being closed by the phone or
+  Windows twice, and reconnecting on the first retry about three seconds later both times.
+- **Sleep and resume:** one sleep of about four hours. Windows delivered both the suspend and the resume
+  notification; the calls link was back 14 seconds after waking; and music, which had been disconnected by
+  hand before the sleep, correctly stayed disconnected.
+- **Answering from the PC:** a later call in the same session shows the prompt appearing, **Answer** being
+  clicked ten seconds later and accepted by Windows, the call then moving to the PC, and the music link
+  reopening when it ended.
+- **Not yet done:** outgoing calls, and a call arriving while SoundBridge is not running. **Decline**,
+  **Mute**, **Move** and **Hang up** have been exercised only against simulated calls in a Debug build, so
+  the Windows functions behind them (`RejectIncoming`, `Mute`, `End`) have never run against a real call.
 
 ### Exercised on a real machine with a simulated link
 
@@ -257,13 +312,15 @@ screens are verified but the Bluetooth behaviour behind them is not.
 
 ### Not yet exercised on hardware
 
-The log from the hardware session contains no dropped link, retry, Bluetooth-off or sleep event, so these
-paths have only run against the fake and simulated links:
+These paths have only run against the fake and simulated links:
 
-- automatic reconnection after the phone drops or goes out of range, and giving up after the retry limit;
+- the phone staying out of reach until the quick retries run out, the waiting that follows, and the
+  reconnect when it returns. The signal used to notice the phone was checked on this PC: Windows reported
+  it as disconnected while no link was up and as connected once the hands-free link was;
 - switching the laptop's Bluetooth off and on;
-- sleep and resume;
-- starting at sign-in, and exiting while connected.
+- sleep and resume with the music link open (see below for what one real sleep did show);
+- starting at sign-in;
+- installing from the signed `.msix`. The package builds and is signed; nobody has installed from it yet.
 
 Sections C to F and H of [docs/hardware-test-checklist.md](docs/hardware-test-checklist.md) cover them.
 
@@ -289,10 +346,9 @@ Both are deferred rather than promised.
 - Confirmed on one hardware setup only. Reconnection, Bluetooth toggling and sleep/resume have not been
   exercised on hardware, as stated above.
 - One phone at a time. Wi-Fi streaming and recording are out of scope.
-- Phone calls need Windows 11 and the installed version, and installing currently needs Developer Mode
-  because the package is unsigned. A signed `.msix` would remove that requirement.
-- No call screen: SoundBridge does not ring, show who is calling, or offer answer and hang-up buttons. Answer,
-  decline and hang up on the phone.
+- Phone calls need Windows 11 and the installed version. The signed package uses a self-signed certificate,
+  so it still needs one elevated step on each PC to trust it.
+- The PC does not ring, and there is no dial pad or call history. Calls are placed from the phone.
 - Call audio uses Windows' default communication devices. If callers say you are too quiet, check that
   microphone's level in Windows; another project reports phones turning it down and Windows keeping it there.
 - Only one app can hold a phone's calls. If Phone Link (or another app) has claimed the phone, Windows
@@ -300,7 +356,7 @@ Both are deferred rather than promised.
 - Windows' automatic Focus rules (full-screen apps, games) are reported by another project to drop the
   hands-free link when they switch on or off. Not observed here yet.
 - The list shows the state of SoundBridge's own link. It does not show whether a phone is in range.
-- After the retry limit is reached, reconnection needs a click; SoundBridge does not keep trying indefinitely.
+- Waiting for the phone ends after 12 hours; after that, reconnecting needs a click.
 - Sleep handling relies on Windows' suspend/resume notifications. If a device does not deliver them (some
   Modern Standby configurations), recovery falls back to the ordinary dropped-link path.
 - Windows' **Startup apps** switch (Task Manager) can disable the sign-in entry while SoundBridge's toggle
@@ -320,8 +376,13 @@ Both are deferred rather than promised.
   "SoundBridge (simulated link)". This code is not compiled into Release builds.
 - `dotnet run --project tools/IconGen -- src/SoundBridge/Assets/app.ico` regenerates the icon, and
   `dotnet run --project tools/IconGen -- --package-images packaging/Images` the package logos.
-- Phone calls cannot be simulated or run from `dotnet run`: without package identity Windows answers
+- Real phone calls cannot be run from `dotnet run`: without package identity Windows answers
   `DeniedBySystem`. Build, install with `packaging\Install.ps1`, and start from the Start menu.
+- **Debug builds only:** `SOUNDBRIDGE_SIMULATE_CALLS=1` replaces the calls role with a simulated one. Seven
+  seconds after call routing starts, a call from "Test Caller" rings, which is enough to see the prompt and
+  every call button. The window title reads "SoundBridge (simulated calls)".
+- A run with `SOUNDBRIDGE_DATA_DIR` set is its own single-instance scope, so a development copy can start
+  beside the installed app.
 
 ## Attribution and licence
 

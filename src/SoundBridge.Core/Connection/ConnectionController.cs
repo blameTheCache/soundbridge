@@ -37,6 +37,11 @@ public sealed class ConnectionController : IDisposable
     private bool _bluetoothOn = true;
     private bool _resumeOnWake;
     private bool _disposed;
+    private DateTimeOffset? _waitingSince;
+    private DateTimeOffset _lastCheckEnded = DateTimeOffset.MinValue;
+    private DateTimeOffset _connectedSince;
+    private bool _connectedByRecovery;
+    private int _unstableRecoveries;
 
     public ConnectionController(IAudioLinkFactory factory, ReconnectPolicy policy, TimeProvider? time = null, ILog? log = null)
     {
@@ -88,6 +93,7 @@ public sealed class ConnectionController : IDisposable
 
             _log.Info(Category, $"Connect requested ({origin}) for '{device.Name}' [{device.Id}].");
             StopActivityLocked();
+            _unstableRecoveries = 0;
             _device = device;
             _resumeOnWake = false;
             _recoverable = origin == ConnectOrigin.SessionStart;
@@ -180,10 +186,19 @@ public sealed class ConnectionController : IDisposable
             }
 
             _policy = policy;
+            if (policy.Enabled && !policy.KeepWaiting && _current.Phase == ConnectionPhase.WaitingForPhone)
+            {
+                _log.Info(Category, "Waiting for the phone was turned off; giving up.");
+                var failure = _current.Failure;
+                var detail = _current.FailureDetail;
+                StopActivityLocked();
+                FailLocked(failure, detail, exhausted: true);
+            }
+
             if (!policy.Enabled)
             {
                 _resumeOnWake = false;
-                if (_current.Phase is ConnectionPhase.WaitingToRetry or ConnectionPhase.WaitingForBluetooth)
+                if (_current.Phase is ConnectionPhase.WaitingToRetry or ConnectionPhase.WaitingForBluetooth or ConnectionPhase.WaitingForPhone)
                 {
                     _log.Info(Category, "Automatic reconnection was turned off; pending reconnection cancelled.");
                     var failure = _current.Failure == ConnectionFailure.None ? ConnectionFailure.ConnectionLost : _current.Failure;
@@ -212,9 +227,13 @@ public sealed class ConnectionController : IDisposable
 
             if (!available)
             {
-                if (_current.Phase is ConnectionPhase.Connecting or ConnectionPhase.Connected or ConnectionPhase.WaitingToRetry)
+                if (_current.Phase is ConnectionPhase.Connecting or ConnectionPhase.Connected or ConnectionPhase.WaitingToRetry or ConnectionPhase.WaitingForPhone)
                 {
+                    // Anything that was in progress followed an established connection or a session start,
+                    // or it would not be waiting; keep it recoverable.
+                    var recoverable = _recoverable || _current.Phase == ConnectionPhase.WaitingForPhone;
                     StopActivityLocked();
+                    _recoverable = recoverable;
                     HoldForBluetoothLocked();
                 }
             }
@@ -281,6 +300,35 @@ public sealed class ConnectionController : IDisposable
         Flush(null);
     }
 
+    /// <summary>
+    /// The phone showed up on Bluetooth. If the controller is waiting for it, check now rather than at the
+    /// next scheduled time. Ignored in every other state.
+    /// </summary>
+    public void NotifyPhoneSeen()
+    {
+        Attempt? toStart = null;
+        lock (_gate)
+        {
+            if (_disposed || _current.Phase != ConnectionPhase.WaitingForPhone || !_bluetoothOn)
+            {
+                return;
+            }
+
+            // The checks themselves make the phone appear for a moment; do not let that feed back.
+            if (_time.GetLocalNow() - _lastCheckEnded < _policy.MinimumCheckGap)
+            {
+                return;
+            }
+
+            _log.Info(Category, $"'{_device!.Name}' was seen on Bluetooth; checking now.");
+            _retryTimer?.Dispose();
+            _retryTimer = null;
+            toStart = BeginAttemptLocked(retry: 0, background: true);
+        }
+
+        Flush(toStart);
+    }
+
     public void Dispose()
     {
         lock (_gate)
@@ -298,7 +346,7 @@ public sealed class ConnectionController : IDisposable
         Flush(null);
     }
 
-    private Attempt? BeginAttemptLocked(int retry)
+    private Attempt? BeginAttemptLocked(int retry, bool background = false)
     {
         var device = _device!;
         IAudioLink link;
@@ -313,18 +361,21 @@ public sealed class ConnectionController : IDisposable
             return null;
         }
 
-        var attempt = new Attempt(++_epoch, link, retry);
+        var attempt = new Attempt(++_epoch, link, retry, background);
         attempt.ClosedHandler = (_, _) => OnLinkClosed(attempt);
         link.Closed += attempt.ClosedHandler;
         _attempt = attempt;
 
-        _log.Info(Category, retry == 0 ? $"Opening link to '{device.Name}'." : $"Opening link to '{device.Name}' (retry {retry} of {_policy.MaxRetries}).");
+        _log.Info(Category, background
+            ? $"Checking whether '{device.Name}' is back."
+            : retry == 0 ? $"Opening link to '{device.Name}'." : $"Opening link to '{device.Name}' (retry {retry} of {_policy.MaxRetries}).");
         SetLocked(new ConnectionSnapshot
         {
             Phase = ConnectionPhase.Connecting,
             Device = device,
             RetryAttempt = retry,
             MaxRetries = _policy.MaxRetries,
+            BackgroundCheck = background,
         });
         return attempt;
     }
@@ -357,6 +408,9 @@ public sealed class ConnectionController : IDisposable
             if (result.Status == LinkOpenStatus.Opened && !attempt.ClosedDuringOpen)
             {
                 _recoverable = true;
+                _waitingSince = null;
+                _connectedSince = _time.GetLocalNow();
+                _connectedByRecovery = attempt.Retry > 0 || attempt.Background;
                 _log.Info(Category, $"Connected to '{_device!.Name}'.");
                 SetLocked(new ConnectionSnapshot
                 {
@@ -369,9 +423,24 @@ public sealed class ConnectionController : IDisposable
             else
             {
                 var failure = result.Status == LinkOpenStatus.Opened ? ConnectionFailure.ConnectionLost : Map(result.Status);
-                _log.Warn(Category, $"Open failed: {failure}{(result.Detail is null ? string.Empty : " - " + result.Detail)}");
                 RetireCurrentLocked();
-                HandleFailureLocked(failure, result.Detail, attempt.Retry);
+                if (attempt.Background && failure == ConnectionFailure.DeniedBySystem)
+                {
+                    // A refusal is a decision by Windows, not an absent phone; checking again will not change it.
+                    _log.Warn(Category, "Windows refused the connection; no longer waiting for the phone.");
+                    _waitingSince = null;
+                    FailLocked(failure, result.Detail, exhausted: false);
+                }
+                else if (attempt.Background)
+                {
+                    _log.Info(Category, $"'{_device!.Name}' is not back yet ({failure}).");
+                    WaitForPhoneLocked(failure, result.Detail);
+                }
+                else
+                {
+                    _log.Warn(Category, $"Open failed: {failure}{(result.Detail is null ? string.Empty : " - " + result.Detail)}");
+                    HandleFailureLocked(failure, result.Detail, attempt.Retry);
+                }
             }
         }
 
@@ -401,7 +470,19 @@ public sealed class ConnectionController : IDisposable
 
             _log.Warn(Category, $"Link to '{_device!.Name}' was closed by the phone or by Windows.");
             RetireCurrentLocked();
-            HandleFailureLocked(ConnectionFailure.ConnectionLost, null, retriesDone: 0);
+
+            var shortLived = _time.GetLocalNow() - _connectedSince < _policy.StableAfter;
+            _unstableRecoveries = _connectedByRecovery && shortLived ? _unstableRecoveries + 1 : 0;
+            if (_unstableRecoveries >= _policy.MaxUnstableRecoveries)
+            {
+                _log.Warn(Category, $"The link closed again after each of the last {_unstableRecoveries} reconnections; not reconnecting any more.");
+                _unstableRecoveries = 0;
+                FailLocked(ConnectionFailure.Unstable, null, exhausted: false);
+            }
+            else
+            {
+                HandleFailureLocked(ConnectionFailure.ConnectionLost, null, retriesDone: 0);
+            }
         }
 
         Flush(null);
@@ -413,7 +494,7 @@ public sealed class ConnectionController : IDisposable
         Attempt? toStart = null;
         lock (_gate)
         {
-            if (epoch != _epoch || _current.Phase != ConnectionPhase.WaitingToRetry)
+            if (epoch != _epoch || _current.Phase is not (ConnectionPhase.WaitingToRetry or ConnectionPhase.WaitingForPhone))
             {
                 return;
             }
@@ -421,13 +502,17 @@ public sealed class ConnectionController : IDisposable
             _retryTimer?.Dispose();
             _retryTimer = null;
 
-            if (_bluetoothOn)
+            if (!_bluetoothOn)
             {
-                toStart = BeginAttemptLocked(_current.RetryAttempt);
+                HoldForBluetoothLocked();
+            }
+            else if (_current.Phase == ConnectionPhase.WaitingForPhone)
+            {
+                toStart = BeginAttemptLocked(retry: 0, background: true);
             }
             else
             {
-                HoldForBluetoothLocked();
+                toStart = BeginAttemptLocked(_current.RetryAttempt);
             }
         }
 
@@ -450,12 +535,55 @@ public sealed class ConnectionController : IDisposable
             return;
         }
 
+        if (canRetry && _policy.KeepWaiting)
+        {
+            _log.Info(Category, $"No answer after {retriesDone} reconnection attempt(s); waiting for the phone to come back.");
+            WaitForPhoneLocked(failure, detail);
+            return;
+        }
+
         if (canRetry)
         {
             _log.Warn(Category, $"Giving up after {retriesDone} reconnection attempt(s).");
         }
 
         FailLocked(failure, detail, exhausted: canRetry);
+    }
+
+    /// <summary>Schedules the next slow check, or gives up once the waiting limit has passed.</summary>
+    private void WaitForPhoneLocked(ConnectionFailure failure, string? detail)
+    {
+        if (!_bluetoothOn)
+        {
+            _recoverable = true;
+            HoldForBluetoothLocked();
+            return;
+        }
+
+        var now = _time.GetLocalNow();
+        _waitingSince ??= now;
+
+        // The attempt that just failed made the phone flicker on Bluetooth by itself; that is not a sighting.
+        _lastCheckEnded = now;
+        if (!_policy.Enabled || !_policy.KeepWaiting || now - _waitingSince >= _policy.WaitLimit)
+        {
+            _log.Warn(Category, $"Giving up: the phone has not come back within {_policy.WaitLimit.TotalHours:0.#} h.");
+            _waitingSince = null;
+            FailLocked(failure, detail, exhausted: true);
+            return;
+        }
+
+        var epoch = ++_epoch;
+        SetLocked(new ConnectionSnapshot
+        {
+            Phase = ConnectionPhase.WaitingForPhone,
+            Device = _device,
+            MaxRetries = _policy.MaxRetries,
+            NextRetryAt = now + _policy.WaitCheckInterval,
+            Failure = failure,
+            FailureDetail = detail,
+        });
+        _retryTimer = _time.CreateTimer(OnRetryTimer, epoch, _policy.WaitCheckInterval, Timeout.InfiniteTimeSpan);
     }
 
     private void ScheduleRetryLocked(int retry, ConnectionFailure failure, string? detail)
@@ -513,6 +641,7 @@ public sealed class ConnectionController : IDisposable
     /// <summary>Ends the current activity: invalidates its callbacks, cancels its timer and queues its link for disposal.</summary>
     private void StopActivityLocked()
     {
+        _waitingSince = null;
         _epoch++;
         _retryTimer?.Dispose();
         _retryTimer = null;
@@ -577,7 +706,7 @@ public sealed class ConnectionController : IDisposable
         _ => ConnectionFailure.Unknown,
     };
 
-    private sealed class Attempt(long epoch, IAudioLink link, int retry)
+    private sealed class Attempt(long epoch, IAudioLink link, int retry, bool background)
     {
         private readonly CancellationTokenSource _cancellation = new();
 
@@ -586,6 +715,9 @@ public sealed class ConnectionController : IDisposable
         public IAudioLink Link { get; } = link;
 
         public int Retry { get; } = retry;
+
+        /// <summary>True for a slow check made while waiting for the phone; its failure is expected.</summary>
+        public bool Background { get; } = background;
 
         public CancellationToken Token => _cancellation.Token;
 

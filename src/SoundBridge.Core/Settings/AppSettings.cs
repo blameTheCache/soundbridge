@@ -18,6 +18,9 @@ public sealed record AppSettings
 
     public int MaxReconnectAttempts { get; init; } = ReconnectPolicy.Default.MaxRetries;
 
+    /// <summary>After the retries run out, go on checking for the phone at a slow pace instead of giving up.</summary>
+    public bool KeepWaitingForPhone { get; init; } = true;
+
     /// <summary>Connect to the preferred phone when a new app session starts.</summary>
     public bool ConnectOnLaunch { get; init; } = true;
 
@@ -32,6 +35,9 @@ public sealed record AppSettings
 
     /// <summary>Take the Bluetooth hands-free role for the preferred phone, so calls can be heard on this PC.</summary>
     public bool RouteCalls { get; init; }
+
+    /// <summary>Show a small Answer / Decline prompt on this PC when the phone rings.</summary>
+    public bool ShowCallPrompt { get; init; } = true;
 
     public string Theme { get; init; } = DefaultTheme;
 
@@ -48,5 +54,6 @@ public sealed record AppSettings
     {
         Enabled = AutoReconnect,
         MaxRetries = ReconnectPolicy.ClampRetries(MaxReconnectAttempts),
+        KeepWaiting = KeepWaitingForPhone,
     };
 }

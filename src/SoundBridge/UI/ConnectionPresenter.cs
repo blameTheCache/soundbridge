@@ -25,6 +25,12 @@ internal static class ConnectionPresenter
         var max = snapshot.MaxRetries;
         return snapshot.Phase switch
         {
+            ConnectionPhase.Connecting when snapshot.BackgroundCheck =>
+                new(StatusTone.Busy, "Checking for the phone…", "Seeing whether it is back in range.", "Cancel"),
+
+            ConnectionPhase.WaitingForPhone =>
+                new(StatusTone.Waiting, "Waiting for the phone", "It is out of reach. SoundBridge checks every couple of minutes and reconnects as soon as it is back.", "Cancel"),
+
             ConnectionPhase.Connecting when snapshot.RetryAttempt == 0 =>
                 new(StatusTone.Busy, "Connecting…", "Asking Windows to open the audio link to this phone.", "Cancel"),
 
@@ -71,7 +77,8 @@ internal static class ConnectionPresenter
             CallsState.Off => "Off.",
             CallsState.NoPhone => "Choose a phone first.",
             CallsState.Starting => "Setting up…",
-            CallsState.Ready => "Ready. Answer on your phone and the call moves to this PC.",
+            CallsState.Ready when !snapshot.LinkUp => "On, but the phone is not connected for calls right now. Calls will come here once it is.",
+            CallsState.Ready => "Ready. Answer on your phone or here and the call moves to this PC.",
             CallsState.InCall when snapshot.CallOnPc => "Call in progress on this PC.",
             CallsState.InCall => "Call in progress on the phone.",
             CallsState.Failed => snapshot.Failure switch
@@ -95,6 +102,7 @@ internal static class ConnectionPresenter
     private static string FailureTitle(ConnectionSnapshot snapshot) => snapshot.Failure switch
     {
         ConnectionFailure.ConnectionLost => "Connection lost",
+        ConnectionFailure.Unstable => "Stopped reconnecting",
         ConnectionFailure.BluetoothOff => "Bluetooth is off",
         _ when snapshot.RetriesExhausted => "Couldn't reconnect",
         _ => "Couldn't connect",
@@ -115,6 +123,7 @@ internal static class ConnectionPresenter
         ConnectionFailure.TimedOut => "The phone didn't answer in time. Check that it is nearby and has Bluetooth on.",
         ConnectionFailure.DeniedBySystem => "Windows refused the connection. Another app may already be receiving audio from this phone.",
         ConnectionFailure.ConnectionLost => "The phone disconnected or moved out of range.",
+        ConnectionFailure.Unstable => "The link was restored several times and the phone closed it again each time. If you switched the phone to another speaker or disconnected this PC on the phone, that is why. Connect when you want it back.",
         ConnectionFailure.Unknown when !string.IsNullOrWhiteSpace(snapshot.FailureDetail) => $"Windows reported: {snapshot.FailureDetail}",
         ConnectionFailure.Unknown => "Windows reported an error without further detail.",
         _ => string.Empty,
