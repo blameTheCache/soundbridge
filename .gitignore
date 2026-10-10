@@ -1,0 +1,31 @@
+# Build output
+bin/
+obj/
+dist/
+TestResults/
+
+# IDE and per-user files
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Private working notes and AI tooling state: never part of the repo
+prompt.txt
+.claude/
+CLAUDE.local.md
+
+# Anything SoundBridge writes if SOUNDBRIDGE_DATA_DIR is pointed inside the repo.
+# Logs and settings contain device names and Bluetooth addresses.
+*.log
+*.log.old
+settings.json
+settings.json.*
+
+# Secrets and signing material
+.env
+.env.*
+*.pfx
+*.snk
+*.key

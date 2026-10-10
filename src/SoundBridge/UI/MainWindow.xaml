@@ -1,0 +1,458 @@
+<Window x:Class="SoundBridge.UI.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        x:ClassModifier="internal"
+        Title="SoundBridge"
+        Width="440"
+        Height="720"
+        Background="{DynamicResource WindowBackgroundBrush}"
+        FontFamily="{StaticResource UiFont}"
+        FontSize="14"
+        Foreground="{DynamicResource TextBrush}"
+        Icon="/Assets/app.ico"
+        ResizeMode="CanMinimize"
+        SnapsToDevicePixels="True"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True"
+        WindowStartupLocation="CenterScreen">
+
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="48" CornerRadius="0" GlassFrameThickness="0,0,0,1" ResizeBorderThickness="0" UseAeroCaptionButtons="False" />
+    </WindowChrome.WindowChrome>
+
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="48" />
+            <RowDefinition Height="*" />
+        </Grid.RowDefinitions>
+
+        <!-- Title bar -->
+        <Grid>
+            <StackPanel Margin="18,0,0,0" VerticalAlignment="Center" Orientation="Horizontal">
+                <Viewbox x:Name="TitleLogo" Width="20" Height="20">
+                    <Canvas Width="20" Height="20">
+                        <Path Data="M 2.5,14.5 A 7.5,7.5 0 0 1 17.5,14.5" Stroke="{DynamicResource AccentBrush}" StrokeEndLineCap="Round" StrokeStartLineCap="Round" StrokeThickness="2.2" />
+                        <Path Data="M 6.5,14.5 A 3.5,3.5 0 0 1 13.5,14.5" Opacity="0.6" Stroke="{DynamicResource AccentBrush}" StrokeEndLineCap="Round" StrokeStartLineCap="Round" StrokeThickness="2.2" />
+                        <Ellipse Canvas.Left="8.6" Canvas.Top="13.1" Width="2.8" Height="2.8" Fill="{DynamicResource AccentBrush}" />
+                    </Canvas>
+                </Viewbox>
+                <Button x:Name="BackButton"
+                        Margin="-8,0,0,0"
+                        AutomationProperties.Name="Back"
+                        Command="{Binding CloseSettingsCommand}"
+                        Content="&#xE72B;"
+                        Style="{StaticResource IconButton}"
+                        ToolTip="Back"
+                        Visibility="Collapsed"
+                        WindowChrome.IsHitTestVisibleInChrome="True" />
+                <TextBlock x:Name="TitleText" Margin="10,0,0,1" VerticalAlignment="Center" FontFamily="{StaticResource DisplayFont}" FontSize="14" FontWeight="SemiBold" Text="SoundBridge" />
+            </StackPanel>
+
+            <StackPanel Margin="0,0,8,0" HorizontalAlignment="Right" VerticalAlignment="Center" Orientation="Horizontal" WindowChrome.IsHitTestVisibleInChrome="True">
+                <Button x:Name="SettingsButton" AutomationProperties.Name="Settings" Command="{Binding OpenSettingsCommand}" Content="&#xE713;" Style="{StaticResource IconButton}" ToolTip="Settings" />
+                <Button AutomationProperties.Name="Minimize" Click="OnMinimizeClick" Content="&#xE921;" FontSize="10" Style="{StaticResource IconButton}" ToolTip="Minimize" />
+                <Button AutomationProperties.Name="Close" Click="OnCloseClick" Content="&#xE8BB;" FontSize="10" Style="{StaticResource IconButton}" ToolTip="{Binding CloseButtonTip}" />
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1" ClipToBounds="True">
+
+            <!-- Connection page -->
+            <Grid x:Name="MainPage" Margin="20,4,20,18">
+                <Grid.RenderTransform>
+                    <TranslateTransform />
+                </Grid.RenderTransform>
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
+
+                <!-- Bluetooth off -->
+                <Border Margin="0,0,0,12"
+                        Padding="14,8,8,8"
+                        Background="{DynamicResource WarningSoftBrush}"
+                        CornerRadius="12"
+                        Visibility="{Binding ShowBluetoothBanner, Converter={StaticResource BoolToVisibility}}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock FontSize="15" Foreground="{DynamicResource WarningBrush}" Style="{StaticResource Glyph}" Text="&#xE702;" />
+                        <TextBlock Grid.Column="1" Margin="10,0" VerticalAlignment="Center" FontSize="13" Text="{Binding BluetoothBannerText}" TextWrapping="Wrap" />
+                        <Button Grid.Column="2" Command="{Binding OpenBluetoothSettingsCommand}" Content="Open settings" Style="{StaticResource LinkButton}" />
+                    </Grid>
+                </Border>
+
+                <!-- Selected phone and its link -->
+                <Border Grid.Row="1" Padding="24,28,24,24" Style="{StaticResource Card}">
+                    <StackPanel>
+                        <Grid Width="104" Height="104" HorizontalAlignment="Center">
+                            <Ellipse x:Name="Halo" Opacity="0" RenderTransformOrigin="0.5,0.5">
+                                <Ellipse.RenderTransform>
+                                    <ScaleTransform />
+                                </Ellipse.RenderTransform>
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{DynamicResource AccentSoftBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tone}" Value="On">
+                                                <Setter Property="Fill" Value="{DynamicResource SuccessSoftBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Waiting">
+                                                <Setter Property="Fill" Value="{DynamicResource WarningSoftBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Error">
+                                                <Setter Property="Fill" Value="{DynamicResource DangerSoftBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+
+                            <Ellipse Margin="14" Fill="{DynamicResource SurfaceAltBrush}" StrokeThickness="1.5">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Stroke" Value="{DynamicResource LineBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tone}" Value="On">
+                                                <Setter Property="Stroke" Value="{DynamicResource SuccessBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Waiting">
+                                                <Setter Property="Stroke" Value="{DynamicResource WarningBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Error">
+                                                <Setter Property="Stroke" Value="{DynamicResource DangerBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+
+                            <!-- Indeterminate: shown only while a request is actually in flight. -->
+                            <Ellipse x:Name="Spinner"
+                                     Margin="14"
+                                     Opacity="0"
+                                     RenderTransformOrigin="0.5,0.5"
+                                     Stroke="{DynamicResource AccentBrush}"
+                                     StrokeDashArray="22 200"
+                                     StrokeDashCap="Round"
+                                     StrokeThickness="2.5">
+                                <Ellipse.RenderTransform>
+                                    <RotateTransform />
+                                </Ellipse.RenderTransform>
+                            </Ellipse>
+
+                            <TextBlock HorizontalAlignment="Center" VerticalAlignment="Center" FontFamily="{StaticResource IconFont}" FontSize="30" Text="&#xE8EA;">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Foreground" Value="{DynamicResource TextMutedBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tone}" Value="On">
+                                                <Setter Property="Foreground" Value="{DynamicResource TextBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+
+                        <TextBlock Margin="0,18,0,0"
+                                   HorizontalAlignment="Center"
+                                   FontFamily="{StaticResource DisplayFont}"
+                                   FontSize="22"
+                                   FontWeight="SemiBold"
+                                   Text="{Binding PhoneName}"
+                                   TextTrimming="CharacterEllipsis" />
+
+                        <StackPanel Margin="0,8,0,0" HorizontalAlignment="Center" Orientation="Horizontal">
+                            <Ellipse Width="8" Height="8" Margin="0,1,8,0" VerticalAlignment="Center">
+                                <Ellipse.Style>
+                                    <Style TargetType="Ellipse">
+                                        <Setter Property="Fill" Value="{DynamicResource TextFaintBrush}" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Busy">
+                                                <Setter Property="Fill" Value="{DynamicResource AccentBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="On">
+                                                <Setter Property="Fill" Value="{DynamicResource SuccessBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Waiting">
+                                                <Setter Property="Fill" Value="{DynamicResource WarningBrush}" />
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Tone}" Value="Error">
+                                                <Setter Property="Fill" Value="{DynamicResource DangerBrush}" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Ellipse.Style>
+                            </Ellipse>
+                            <TextBlock FontSize="14" FontWeight="SemiBold" Foreground="{DynamicResource TextMutedBrush}" Text="{Binding StatusTitle}" />
+                        </StackPanel>
+
+                        <TextBlock Height="54"
+                                   Margin="0,10,0,0"
+                                   FontSize="13"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   LineHeight="18"
+                                   Text="{Binding StatusDetail}"
+                                   TextAlignment="Center"
+                                   TextTrimming="CharacterEllipsis"
+                                   TextWrapping="Wrap"
+                                   ToolTip="{Binding StatusDetail}" />
+
+                        <Button Margin="0,14,0,0" Command="{Binding PrimaryCommand}" Content="{Binding PrimaryText}" Style="{StaticResource ConnectionButton}" />
+                    </StackPanel>
+                </Border>
+
+                <!-- Paired sources -->
+                <Grid Grid.Row="2" Margin="4,20,0,8">
+                    <TextBlock VerticalAlignment="Center" Style="{StaticResource SectionLabel}" Text="AUDIO SOURCES" />
+                    <StackPanel HorizontalAlignment="Right" Orientation="Horizontal">
+                        <Button Command="{Binding OpenBluetoothSettingsCommand}" Content="Bluetooth settings" Style="{StaticResource LinkButton}" ToolTip="Pair or remove phones in Windows settings" />
+                        <Button x:Name="RefreshButton" Width="30" Height="30" Margin="2,0,0,0" AutomationProperties.Name="Refresh" Command="{Binding RefreshCommand}" Content="&#xE72C;" FontSize="13" RenderTransformOrigin="0.5,0.5" Style="{StaticResource IconButton}" ToolTip="Refresh the list">
+                            <Button.RenderTransform>
+                                <RotateTransform />
+                            </Button.RenderTransform>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+
+                <Border Grid.Row="3" Style="{StaticResource Card}">
+                    <Grid>
+                        <ListBox IsEnabled="{Binding CanChooseDevice}"
+                                 ItemContainerStyle="{StaticResource DeviceRow}"
+                                 ItemsSource="{Binding Devices}"
+                                 SelectedItem="{Binding SelectedDevice, Mode=TwoWay}"
+                                 Style="{StaticResource DeviceList}"
+                                 Visibility="{Binding HasDevices, Converter={StaticResource BoolToVisibility}}" />
+                        <TextBlock x:Name="EmptyList"
+                                   MaxWidth="290"
+                                   Margin="20"
+                                   VerticalAlignment="Center"
+                                   FontSize="13"
+                                   Foreground="{DynamicResource TextMutedBrush}"
+                                   LineHeight="18"
+                                   Text="{Binding EmptyListText}"
+                                   TextAlignment="Center"
+                                   TextWrapping="Wrap">
+                            <TextBlock.Style>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding HasDevices}" Value="False">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </TextBlock.Style>
+                        </TextBlock>
+                    </Grid>
+                </Border>
+
+                <StackPanel Grid.Row="4" Margin="4,12,0,0" Orientation="Horizontal">
+                    <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource TextFaintBrush}" Text="Plays through the Windows default output." />
+                    <Button Margin="2,0,0,0" Command="{Binding OpenSoundSettingsCommand}" Content="Sound settings" Style="{StaticResource LinkButton}" />
+                </StackPanel>
+            </Grid>
+
+            <!-- Settings page -->
+            <ScrollViewer x:Name="SettingsPage" Opacity="0" VerticalScrollBarVisibility="Auto" Visibility="Collapsed">
+                <ScrollViewer.RenderTransform>
+                    <TranslateTransform />
+                </ScrollViewer.RenderTransform>
+                <StackPanel Margin="20,4,20,24">
+
+                    <TextBlock Margin="4,4,0,8" Style="{StaticResource SectionLabel}" Text="STARTUP" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <Grid Margin="16,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Launch at sign-in" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Start SoundBridge when you sign in to Windows." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Launch at sign-in" IsChecked="{Binding LaunchAtSignIn}" Style="{StaticResource Switch}" />
+                            </Grid>
+                            <Border Style="{StaticResource RowDivider}" />
+                            <Grid Margin="16,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Start in the tray at sign-in" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="When Windows starts SoundBridge, keep the window hidden. Opening it yourself always shows the window." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Start in the tray at sign-in" IsChecked="{Binding StartHiddenAtSignIn}" Style="{StaticResource Switch}" />
+                            </Grid>
+                            <Border Style="{StaticResource RowDivider}" />
+                            <Grid Margin="16,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Connect when SoundBridge starts" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Each start is a new session: your preferred phone is connected even if you disconnected it last time." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Connect when SoundBridge starts" IsChecked="{Binding ConnectOnLaunch}" Style="{StaticResource Switch}" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Margin="4,22,0,8" Style="{StaticResource SectionLabel}" Text="RECONNECTION" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel>
+                            <Grid Margin="16,14">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Reconnect automatically" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Restore the link if it drops, after sleep, or when Bluetooth comes back. Never after you disconnect yourself." />
+                                </StackPanel>
+                                <CheckBox Grid.Column="1" AutomationProperties.Name="Reconnect automatically" IsChecked="{Binding AutoReconnect}" Style="{StaticResource Switch}" />
+                            </Grid>
+                            <Border Style="{StaticResource RowDivider}" />
+                            <Grid Margin="16,14" IsEnabled="{Binding AutoReconnect}">
+                                <Grid.Style>
+                                    <Style TargetType="Grid">
+                                        <Style.Triggers>
+                                            <Trigger Property="IsEnabled" Value="False">
+                                                <Setter Property="Opacity" Value="0.45" />
+                                            </Trigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Grid.Style>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel Margin="0,0,16,0">
+                                    <TextBlock Style="{StaticResource RowTitle}" Text="Attempts before giving up" />
+                                    <TextBlock Style="{StaticResource RowDescription}" Text="Waits 2, 4, 8 seconds and so on between tries, up to a minute." />
+                                </StackPanel>
+                                <Border Grid.Column="1" Padding="3" VerticalAlignment="Center" Background="{DynamicResource SurfaceAltBrush}" CornerRadius="10">
+                                    <StackPanel Orientation="Horizontal">
+                                        <RadioButton Content="3" GroupName="Attempts" IsChecked="{Binding MaxReconnectAttempts, Converter={StaticResource EqualsConverter}, ConverterParameter=3}" Style="{StaticResource Segment}" />
+                                        <RadioButton Content="5" GroupName="Attempts" IsChecked="{Binding MaxReconnectAttempts, Converter={StaticResource EqualsConverter}, ConverterParameter=5}" Style="{StaticResource Segment}" />
+                                        <RadioButton Content="10" GroupName="Attempts" IsChecked="{Binding MaxReconnectAttempts, Converter={StaticResource EqualsConverter}, ConverterParameter=10}" Style="{StaticResource Segment}" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Margin="4,22,0,8" Style="{StaticResource SectionLabel}" Text="TRAY" />
+                    <Border Style="{StaticResource Card}">
+                        <Grid Margin="16,14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Style="{StaticResource RowTitle}" Text="Keep running when the window is closed" />
+                                <TextBlock Style="{StaticResource RowDescription}" Text="On: closing hides SoundBridge in the tray and your phone stays connected. Off: closing exits and disconnects." />
+                            </StackPanel>
+                            <CheckBox Grid.Column="1" AutomationProperties.Name="Keep running when the window is closed" IsChecked="{Binding CloseToTray}" Style="{StaticResource Switch}" />
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Margin="4,22,0,8" Style="{StaticResource SectionLabel}" Text="APPEARANCE" />
+                    <Border Padding="16,14,16,16" Style="{StaticResource Card}">
+                        <StackPanel>
+                            <TextBlock FontSize="12" Foreground="{DynamicResource TextMutedBrush}" Text="Dark" />
+                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding DarkThemes}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="3" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Margin="4" AutomationProperties.Name="{Binding Name}" Command="{Binding DataContext.SelectThemeCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding Id}" Style="{StaticResource ThemeSwatch}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                            <TextBlock Margin="0,12,0,0" FontSize="12" Foreground="{DynamicResource TextMutedBrush}" Text="Light" />
+                            <ItemsControl Margin="0,8,0,0" ItemsSource="{Binding LightThemes}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="3" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Margin="4" AutomationProperties.Name="{Binding Name}" Command="{Binding DataContext.SelectThemeCommand, RelativeSource={RelativeSource AncestorType=ItemsControl}}" CommandParameter="{Binding Id}" Style="{StaticResource ThemeSwatch}" />
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Margin="4,22,0,8" Style="{StaticResource SectionLabel}" Text="DIAGNOSTICS" />
+                    <Border Style="{StaticResource Card}">
+                        <Grid Margin="16,14">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel Margin="0,0,16,0">
+                                <TextBlock Style="{StaticResource RowTitle}" Text="Local logs" />
+                                <TextBlock Style="{StaticResource RowDescription}" Text="Connection events and errors, kept on this PC for a week. Audio is never recorded." />
+                            </StackPanel>
+                            <Button Grid.Column="1" Height="34" Padding="14,0" VerticalAlignment="Center" Command="{Binding OpenLogsCommand}" Content="Open folder" FontSize="13" Style="{StaticResource SecondaryButton}" />
+                        </Grid>
+                    </Border>
+
+                    <TextBlock Margin="4,22,0,8" Style="{StaticResource SectionLabel}" Text="ABOUT" />
+                    <Border Style="{StaticResource Card}">
+                        <StackPanel Margin="16,14,16,16">
+                            <TextBlock Style="{StaticResource RowTitle}" Text="{Binding VersionText}" />
+                            <TextBlock Style="{StaticResource RowDescription}" Text="Receives phone audio over Bluetooth using the A2DP sink built into Windows. Everything stays on this PC." />
+                            <TextBlock Style="{StaticResource RowDescription}" Text="Connection flow adapted from AudioPlaybackConnector by Richard Yu, MIT licence." />
+                            <Button Margin="0,14,0,0" HorizontalAlignment="Left" Command="{Binding ExitCommand}" Content="Exit SoundBridge" FontSize="13" Style="{StaticResource SecondaryButton}" ToolTip="Disconnects your phone and quits completely" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
+        </Grid>
+
+        <!-- First close: make the difference between hiding and quitting explicit. -->
+        <Grid x:Name="ClosePrompt" Grid.RowSpan="2" KeyboardNavigation.DirectionalNavigation="Cycle" KeyboardNavigation.TabNavigation="Cycle" Opacity="0" Visibility="Collapsed" WindowChrome.IsHitTestVisibleInChrome="True">
+            <Border Background="{DynamicResource ScrimBrush}" MouseLeftButtonDown="OnScrimClick" />
+            <Border x:Name="ClosePromptCard" Margin="28,0" Padding="24" VerticalAlignment="Center" RenderTransformOrigin="0.5,0.5" Style="{StaticResource Card}">
+                <Border.RenderTransform>
+                    <ScaleTransform />
+                </Border.RenderTransform>
+                <StackPanel>
+                    <TextBlock FontFamily="{StaticResource DisplayFont}" FontSize="18" FontWeight="SemiBold" Text="Keep SoundBridge running?" TextWrapping="Wrap" />
+                    <TextBlock Margin="0,10,0,0" FontSize="13" Foreground="{DynamicResource TextMutedBrush}" LineHeight="19" TextWrapping="Wrap">
+                        Phone audio only reaches this PC while SoundBridge is running.
+                        <LineBreak />
+                        <LineBreak />
+                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}" Text="Keep in tray" />
+                        hides the window and leaves your phone connected.
+                        <Run FontWeight="SemiBold" Foreground="{DynamicResource TextBrush}" Text="Exit" />
+                        disconnects it and quits.
+                    </TextBlock>
+                    <Button x:Name="KeepInTrayButton" Margin="0,20,0,0" Command="{Binding KeepInTrayCommand}" Content="Keep in tray" Height="44" Style="{StaticResource PrimaryButton}" />
+                    <Button Margin="0,8,0,0" Command="{Binding ExitOnCloseCommand}" Content="Exit SoundBridge" Height="44" Style="{StaticResource SecondaryButton}" />
+                    <Grid Margin="0,12,0,0">
+                        <TextBlock VerticalAlignment="Center" FontSize="12" Foreground="{DynamicResource TextFaintBrush}" Text="You can change this later in Settings." />
+                        <Button HorizontalAlignment="Right" Command="{Binding DismissClosePromptCommand}" Content="Cancel" Style="{StaticResource LinkButton}" />
+                    </Grid>
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</Window>
