@@ -8,4 +8,10 @@
     <Authors>blameTheCache</Authors>
     <Copyright>Copyright (c) 2026 blameTheCache. Portions (c) 2020 Richard Yu (AudioPlaybackConnector, MIT).</Copyright>
   </PropertyGroup>
+
+  <!-- Release binaries carry debug information for readable stack traces in the log. Without this they
+       would also carry the full path of the folder they were built in. -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PathMap>$(MSBuildThisFileDirectory)=/_/</PathMap>
+  </PropertyGroup>
 </Project>

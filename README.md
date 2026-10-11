@@ -1,14 +1,37 @@
-# SoundBridge
+# SoundBridge: a Bluetooth audio receiver for Windows
 
 Hear your Android phone and your Windows laptop at the same time, through whatever is plugged into the laptop.
 
-SoundBridge turns the PC into a Bluetooth audio receiver for one phone, using the A2DP sink that has been
+SoundBridge makes a Windows 10 or Windows 11 PC behave like a Bluetooth speaker or headset for your phone, so
+the phone's music, videos and podcasts play through the PC's headphones or speakers alongside the PC's own
+sound. It turns the PC into a Bluetooth audio receiver for one phone, using the A2DP sink that has been
 built into Windows since Windows 10 version 2004. Windows mixes the phone's audio with the laptop's own and
 plays both on the current output device. Everything is local: no account, no cloud service, no phone app and
 no audio driver.
 
 On Windows 11 the installed version can also take **phone calls**: answer on the phone or from a prompt on
 the PC, and the call moves to the PC's speaker or headphones and microphone.
+
+- **Phone and PC audio together**, on the output device Windows is already using.
+- **Hands-free phone calls** on Windows 11, with answer, decline, mute and hang-up on the PC.
+- **A volume slider for the phone** that is separate from the PC's volume, and an indicator that moves only
+  when the phone's audio is actually measured.
+- **Reconnects by itself** after a dropped link, and never after you disconnect on purpose.
+- **Tray icon and launch at sign-in**, with three dark and three light themes.
+- **Nothing to install on the phone**, and no audio is recorded or sent anywhere.
+
+## Download
+
+Get the latest version from the [Releases page](https://github.com/blameTheCache/soundbridge/releases/latest).
+
+| File | Use it for | Needs |
+|------|------------|-------|
+| `SoundBridge-<version>-win-x64-selfcontained.zip` | Music. Unzip and run `SoundBridge.exe`. | Nothing else |
+| `SoundBridge-<version>-win-x64.zip` | Music. Same app in a much smaller download. | [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) |
+| `SoundBridge-<version>.msix` and `SoundBridge.cer` | Music and phone calls. Installs to the Start menu. | Windows 11 for calls, the .NET 10 Desktop Runtime, and one elevated step to trust the certificate ([below](#phone-calls-windows-11)) |
+
+The downloads are not signed by a public certificate authority, so Windows SmartScreen may ask before the
+first run.
 
 > **Status.** Confirmed on real hardware (one laptop, one phone): connecting, simultaneous phone and laptop
 > playback, disconnecting, tray operation, recovery from a dropped link, phone calls answered on the phone
@@ -21,15 +44,16 @@ the PC, and the call moves to the PC's speaker or headphones and microphone.
 
 - Windows 10 version 2004 (build 19041) or later; Windows 11 recommended.
 - A Bluetooth adapter, and a phone already paired with the PC in Windows settings.
-- [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) for the default build
-  (or build self-contained, below).
+- [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0), unless you use the
+  self-contained download or build.
 - No administrator rights for music.
 - For phone calls: Windows 11 and the installed version. Installing needs either Developer Mode switched on,
   or a signed package whose certificate the PC trusts. Each asks for administrator consent once.
 
 ## Run
 
-Start `dist\SoundBridge\SoundBridge.exe`. The window opens on every launch you start yourself.
+Start `SoundBridge.exe` from the unzipped download, or `dist\SoundBridge\SoundBridge.exe` if you built it
+yourself. The window opens on every launch you start yourself.
 
 1. Pair the phone with the PC if you have not already (**Bluetooth settings** opens the right page).
 2. The phone appears under **Audio sources** and is selected. Click **Connect**.
@@ -37,7 +61,21 @@ Start `dist\SoundBridge\SoundBridge.exe`. The window opens on every launch you s
 
 ### Phone calls (Windows 11)
 
-Windows only gives the Bluetooth hands-free role to an *installed* app, so calls need one extra step:
+Windows only gives the Bluetooth hands-free role to an *installed* app, so calls need one extra step.
+
+**From the release download.** Put `SoundBridge-<version>.msix` and `SoundBridge.cer` in one folder, trust
+the certificate once from an elevated PowerShell prompt, then install:
+
+```powershell
+Import-Certificate -FilePath .\SoundBridge.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
+Add-AppxPackage -Path .\SoundBridge-<version>.msix
+```
+
+Start **SoundBridge** from the Start menu and, in Settings, turn on **Hear phone calls on this PC**. The
+certificate is self-signed: it only shows that packages come from the same key, not who made them, so
+whoever installs has to decide to trust it.
+
+**From a build of your own, with Developer Mode:**
 
 1. Turn on **Developer Mode**: Settings > System > Advanced (older builds: "For developers").
 2. Exit SoundBridge if it is running, then run `.\packaging\Install.ps1`.
@@ -48,18 +86,10 @@ Windows only gives the Bluetooth hands-free role to an *installed* app, so calls
 Settings and logs are shared with the plain exe. `.\packaging\Install.ps1 -Uninstall` removes the
 installation; keep `dist\SoundBridge-package` where it is until then, because Windows runs it in place.
 
-**Without Developer Mode.** `.\packaging\Build-Msix.ps1` packs the same folder into a signed
-`dist\SoundBridge-<version>.msix` and writes `dist\SoundBridge.cer` beside it. It signs with a self-signed
-certificate that it creates in your personal certificate store the first time. On the PC that will run it,
-trust the certificate once from an elevated prompt, then install:
-
-```powershell
-Import-Certificate -FilePath .\SoundBridge.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople
-Add-AppxPackage -Path .\SoundBridge-<version>.msix
-```
-
-A self-signed certificate only shows that packages come from the same key, not who made them; whoever
-installs has to decide to trust it.
+**From a build of your own, without Developer Mode.** `.\packaging\Build-Msix.ps1` packs the same folder
+into a signed `dist\SoundBridge-<version>.msix` and writes `dist\SoundBridge.cer` beside it. It signs with a
+self-signed certificate that it creates in your personal certificate store the first time. Install the pair
+with the two commands above.
 
 ## Build
 
