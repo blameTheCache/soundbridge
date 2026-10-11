@@ -8,6 +8,8 @@ public sealed class PhoneAudioSessionsTests
     [InlineData("Microphone (Pixel A2DP SNK)", "Pixel")]
     [InlineData("Microphone (Sam's Galaxy S24 A2DP SNK)", "Sam's Galaxy S24")]
     [InlineData("Mikrofon (PIXEL a2dp snk)", " Pixel ")]
+    [InlineData("Microphone (Pixel 8 A2DP SNK)", "Pixel 8")]
+    [InlineData("Pixel A2DP SNK", "Pixel")]
     public void Recognises_the_music_session_of_the_phone(string session, string phone)
     {
         Assert.True(PhoneAudioSessions.IsMusicSessionOf(session, phone));
@@ -16,6 +18,9 @@ public sealed class PhoneAudioSessionsTests
     [Theory]
     [InlineData("Microphone (Pixel Hands-Free HF Audio)", "Pixel")]
     [InlineData("Microphone (Galaxy A2DP SNK)", "Pixel")]
+    [InlineData("Microphone (Pixel 8 A2DP SNK)", "Pixel")]
+    [InlineData("Microphone (Pixel8 A2DP SNK)", "Pixel")]
+    [InlineData("Microphone (Alice's Pixel A2DP SNK)", "Pixel")]
     [InlineData("Spotify", "Pixel")]
     [InlineData("", "Pixel")]
     [InlineData(null, "Pixel")]

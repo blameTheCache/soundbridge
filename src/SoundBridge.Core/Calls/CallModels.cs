@@ -60,6 +60,10 @@ public interface ICallTransport : IDisposable
     /// <summary>Asks Windows to bring the hands-free link up. Best effort; the phone may also do so itself.</summary>
     Task ConnectAsync(CancellationToken cancellationToken);
 
+    /// <summary>
+    /// The calls the phone has right now. An empty list means there are none; when that could not be found
+    /// out, this throws, so that "no answer" is never mistaken for "no calls".
+    /// </summary>
     Task<IReadOnlyList<ActiveCall>> GetActiveCallsAsync(CancellationToken cancellationToken);
 
     /// <summary>Moves a call's audio to this PC, or back to the phone.</summary>

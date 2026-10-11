@@ -90,6 +90,10 @@ public partial class App : Application, IAppShell
         var log = _log = new FileLog(Path.Combine(dataDirectory, "logs"));
         var autostart = AppIdentity.StartedAtSignIn || e.Args.Contains(StartupRegistration.AutostartArgument, StringComparer.OrdinalIgnoreCase);
         log.Info(Category, $"SoundBridge {typeof(App).Assembly.GetName().Version} starting on {Environment.OSVersion.VersionString} (installed app: {AppIdentity.IsPackaged}, launched at sign-in: {autostart}, started for a call: {AppIdentity.StartedForPhoneCall}).");
+        if (_instance.Unguarded)
+        {
+            log.Warn(Category, "Another program holds the names SoundBridge uses to keep to one copy, and no other SoundBridge is running. Starting anyway; a second copy would not be stopped.");
+        }
 
         DispatcherUnhandledException += (_, args) =>
         {

@@ -62,8 +62,29 @@ if (-not $certificate) {
 $msix = Join-Path $root "dist\SoundBridge-$version.msix"
 $cer = Join-Path $root 'dist\SoundBridge.cer'
 
-& $makeAppx pack /d $layout /p $msix /o | Out-Null
-if ($LASTEXITCODE -ne 0) { throw 'MakeAppx failed. Run it by hand to see why: the manifest is the usual cause.' }
+# Pack from a fresh folder holding exactly the files a package is meant to have. The layout folder is reused
+# from build to build, and Windows adds files of its own once it is registered; whatever else has found its
+# way in there must not end up inside a signed package.
+$expected = 'AppxManifest.xml', 'SoundBridge.exe', 'Images\Square150x150Logo.png', 'Images\Square44x44Logo.png', 'Images\StoreLogo.png'
+$staging = Join-Path ([IO.Path]::GetTempPath()) "SoundBridge-msix-$([guid]::NewGuid().ToString('N'))"
+try {
+    foreach ($file in $expected) {
+        $source = Join-Path $layout $file
+        if (-not (Test-Path $source -PathType Leaf)) { throw "Missing from the package layout: $file. Run .\build.ps1 again." }
+        $target = Join-Path $staging $file
+        New-Item -ItemType Directory -Force (Split-Path $target -Parent) | Out-Null
+        Copy-Item -LiteralPath $source -Destination $target
+    }
+
+    $extra = Get-ChildItem $layout -Recurse -File | ForEach-Object { $_.FullName.Substring($layout.Length + 1) } | Where-Object { $_ -notin $expected }
+    if ($extra) { Write-Warning "Left out of the package, because these are not part of it: $($extra -join ', ')" }
+
+    & $makeAppx pack /d $staging /p $msix /o | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'MakeAppx failed. Run it by hand to see why: the manifest is the usual cause.' }
+}
+finally {
+    Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 & $signTool sign /fd SHA256 /sha1 $certificate.Thumbprint $msix | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'SignTool failed.' }

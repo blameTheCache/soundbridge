@@ -304,7 +304,7 @@ threads and never depends on the UI thread.
 
 ### Automated (run on every `build.ps1`)
 
-136 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
+147 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
 
 - duplicate connect requests while connecting or connected start nothing new;
 - manual disconnect cancels an in-flight attempt, ignores its late success, cancels a pending retry, and is
@@ -325,7 +325,13 @@ threads and never depends on the UI thread.
   progress; a call moved to the phone by hand is not pulled back; a button pressed while call routing is
   failing never acts on a later call;
 - a link that is restored and closes again within a minute, three times running, ends reconnection, while
-  restored links that hold do not count against it.
+  restored links that hold do not count against it;
+- calls that Windows cannot report for a moment are not taken to have ended, and are given up on only after
+  ten seconds; a call action applies only to the call it was pressed for; switching call routing off while
+  the role is still being claimed moves no call;
+- a new link is not opened while another thread is still closing the old one, and the automatic connect at
+  startup gives way to a connect or disconnect the user has already made;
+- the phone's audio session is matched on the phone's whole name, so "Pixel" does not match "Pixel 8".
 
 As a check on the tests themselves, seven deliberate faults were introduced into the controller one at a
 time; six were caught, and the seventh (not cancelling the timer on disconnect) is harmless because a second

@@ -145,27 +145,22 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
         var active = new List<ActiveCall>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
+        // A line that cannot be read fails the whole query. Returning the calls that were read, or none, would
+        // tell the caller that the others have ended.
         foreach (var line in _lines.Values)
         {
-            try
+            var result = await line.GetAllActivePhoneCallsAsync().AsTask(cancellationToken).WaitAsync(Patience, cancellationToken).ConfigureAwait(false);
+            foreach (var call in result.AllActivePhoneCalls)
             {
-                var result = await line.GetAllActivePhoneCallsAsync().AsTask(cancellationToken).WaitAsync(Patience, cancellationToken).ConfigureAwait(false);
-                foreach (var call in result.AllActivePhoneCalls)
+                var status = call.Status;
+                if (status is PhoneCallStatus.Ended or PhoneCallStatus.Lost)
                 {
-                    var status = call.Status;
-                    if (status is PhoneCallStatus.Ended or PhoneCallStatus.Lost)
-                    {
-                        continue;
-                    }
-
-                    Track(call);
-                    seen.Add(call.CallId);
-                    active.Add(new ActiveCall(call.CallId, Map(status), call.AudioDevice == PhoneCallAudioDevice.LocalDevice, call.IsMuted, CallerOf(call)));
+                    continue;
                 }
-            }
-            catch (Exception ex)
-            {
-                log.Warn(Category, $"Could not read the calls on the phone's line: {Describe(ex)}");
+
+                Track(call);
+                seen.Add(call.CallId);
+                active.Add(new ActiveCall(call.CallId, Map(status), call.AudioDevice == PhoneCallAudioDevice.LocalDevice, call.IsMuted, CallerOf(call)));
             }
         }
 
@@ -289,14 +284,16 @@ internal sealed class PhoneCallTransport(AudioSource phone, ILog log) : ICallTra
             log.Warn(Category, $"Could not read the phone's Bluetooth address: {Describe(ex)}");
         }
 
-        if (!string.IsNullOrEmpty(address))
+        // Without the address there is only the name to go on, and two paired phones can share a name. Taking
+        // the calls of the wrong phone is worse than taking none, so this stops here.
+        if (string.IsNullOrEmpty(address))
         {
-            return candidates.FirstOrDefault(candidate =>
-                candidate.Properties.TryGetValue(AddressProperty, out var value) &&
-                string.Equals(value as string, address, StringComparison.OrdinalIgnoreCase));
+            throw new InvalidOperationException("The phone's Bluetooth address could not be read, so it cannot be told apart from another phone with the same name.");
         }
 
-        return candidates.FirstOrDefault(candidate => string.Equals(candidate.Name, phone.Name, StringComparison.CurrentCultureIgnoreCase));
+        return candidates.FirstOrDefault(candidate =>
+            candidate.Properties.TryGetValue(AddressProperty, out var value) &&
+            string.Equals(value as string, address, StringComparison.OrdinalIgnoreCase));
     }
 
     private async void OnLineAdded(PhoneLineWatcher sender, PhoneLineWatcherEventArgs args)

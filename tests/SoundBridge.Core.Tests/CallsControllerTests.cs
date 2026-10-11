@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Time.Testing;
 using SoundBridge.Core.Calls;
 using SoundBridge.Core.Connection;
 
@@ -11,9 +12,10 @@ public sealed class CallsControllerTests : IDisposable
 
     private readonly FakeCallTransportFactory _factory = new();
     private readonly RecordingLog _log = new();
+    private readonly FakeTimeProvider _time = new();
     private readonly CallsController _controller;
 
-    public CallsControllerTests() => _controller = new CallsController(_factory, _log);
+    public CallsControllerTests() => _controller = new CallsController(_factory, _log, _time);
 
     public void Dispose() => _controller.Dispose();
 
@@ -432,6 +434,82 @@ public sealed class CallsControllerTests : IDisposable
     }
 
     [Fact]
+    public void A_request_applies_only_to_the_call_it_was_made_about()
+    {
+        var transport = Ready();
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        WaitFor(CallsState.InCall);
+        Settle();
+
+        // The worker is held up while the first call ends and another one begins.
+        transport.HoldReads();
+        _controller.HangUp();
+        Until(() => transport.ReadsWaiting > 0);
+        transport.SetCalls(new ActiveCall("call-2", CallPhase.Talking, OnPc: true));
+        transport.ReleaseReads();
+
+        Until(() => _log.Contains("Ignored 'HangUp'"));
+        Settle();
+        Assert.Empty(transport.Actions);
+        Assert.Equal(CallsState.InCall, _controller.Current.State);
+    }
+
+    [Fact]
+    public void A_failed_look_at_the_calls_does_not_end_the_call()
+    {
+        var transport = Ready();
+        var ended = 0;
+        _controller.CallEnded += (_, _) => Interlocked.Increment(ref ended);
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        WaitFor(CallsState.InCall);
+
+        transport.FailReads = new TimeoutException("no answer");
+        transport.RaiseChanged();
+
+        Until(() => _log.Contains("keeping what was last known"));
+        Assert.Equal(CallsState.InCall, _controller.Current.State);
+        Assert.Equal(0, Volatile.Read(ref ended));
+
+        // Windows answers again: the call is still there, and it ends only when it really does.
+        transport.FailReads = null;
+        var reads = transport.ReadCalls;
+        Until(() =>
+        {
+            _time.Advance(TimeSpan.FromSeconds(1));
+            return transport.ReadCalls > reads;
+        });
+        Settle();
+        Assert.Equal(CallsState.InCall, _controller.Current.State);
+        Assert.Equal(0, Volatile.Read(ref ended));
+
+        transport.SetCalls();
+        WaitFor(CallsState.Ready);
+        Until(() => Volatile.Read(ref ended) == 1);
+    }
+
+    [Fact]
+    public void Calls_that_stay_unreadable_are_given_up_on_rather_than_shown_for_ever()
+    {
+        var transport = Ready();
+        var ended = 0;
+        _controller.CallEnded += (_, _) => Interlocked.Increment(ref ended);
+        transport.SetCalls(new ActiveCall("call-1", CallPhase.Talking, OnPc: true));
+        WaitFor(CallsState.InCall);
+
+        transport.FailReads = new TimeoutException("no answer");
+        transport.RaiseChanged();
+        Until(() => _log.Contains("keeping what was last known"));
+
+        Until(() =>
+        {
+            _time.Advance(TimeSpan.FromSeconds(1));
+            return _controller.Current.State == CallsState.Ready;
+        });
+        Assert.True(_log.Contains("assuming there are none"));
+        Until(() => Volatile.Read(ref ended) == 1);
+    }
+
+    [Fact]
     public void Choosing_another_phone_releases_the_first_and_claims_the_second()
     {
         var first = Ready();
@@ -456,6 +534,22 @@ public sealed class CallsControllerTests : IDisposable
 
         WaitFor(CallsState.Off);
         Until(() => _factory.Transports[0].Disposed);
+    }
+
+    [Fact]
+    public void Switching_off_while_a_claim_is_in_flight_moves_no_call()
+    {
+        _factory.HoldClaims = true;
+        _factory.InitialCalls = [new ActiveCall("call-1", CallPhase.Talking, OnPc: false)];
+        _controller.Configure(enabled: true, Phone);
+        Until(() => _factory.Transports.Count == 1 && _factory.Transports[0].ClaimCalls == 1);
+
+        _controller.Configure(enabled: false, Phone);
+        _factory.Transports[0].CompleteClaim(new CallClaimResult(CallClaimStatus.Claimed));
+
+        WaitFor(CallsState.Off);
+        Until(() => _factory.Transports[0].Disposed);
+        Assert.Empty(_factory.Transports[0].Moved);
     }
 
     [Fact]
@@ -515,9 +609,12 @@ internal sealed class FakeCallTransport(AudioSource phone, FakeCallTransportFact
     private readonly TaskCompletionSource<CallClaimResult> _heldClaim = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Lock _callsGate = new();
     private volatile IReadOnlyList<ActiveCall> _calls = owner.InitialCalls;
+    private volatile TaskCompletionSource? _readGate;
     private int _claimCalls;
     private int _connectCalls;
     private int _disposeCalls;
+    private int _readCalls;
+    private int _readsWaiting;
 
     public event EventHandler? Changed;
 
@@ -556,7 +653,34 @@ internal sealed class FakeCallTransport(AudioSource phone, FakeCallTransportFact
         return Task.CompletedTask;
     }
 
-    public Task<IReadOnlyList<ActiveCall>> GetActiveCallsAsync(CancellationToken cancellationToken) => Task.FromResult(_calls);
+    /// <summary>When set, looking at the calls fails with this, as when Windows does not answer.</summary>
+    public Exception? FailReads { get; set; }
+
+    public int ReadCalls => _readCalls;
+
+    public int ReadsWaiting => _readsWaiting;
+
+    /// <summary>Makes every look at the calls wait until <see cref="ReleaseReads"/>.</summary>
+    public void HoldReads() => _readGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    public void ReleaseReads()
+    {
+        var gate = _readGate;
+        _readGate = null;
+        gate?.TrySetResult();
+    }
+
+    public async Task<IReadOnlyList<ActiveCall>> GetActiveCallsAsync(CancellationToken cancellationToken)
+    {
+        Interlocked.Increment(ref _readCalls);
+        if (_readGate is { } gate)
+        {
+            Interlocked.Increment(ref _readsWaiting);
+            await gate.Task.ConfigureAwait(false);
+        }
+
+        return FailReads is { } failure ? throw failure : _calls;
+    }
 
     public ConcurrentQueue<string> Actions { get; } = new();
 

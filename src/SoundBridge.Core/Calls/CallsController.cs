@@ -19,11 +19,17 @@ public sealed class CallsController : IDisposable
 {
     private const string Category = "Calls";
 
+    // When Windows cannot say which calls exist, the last known state is kept and the question is asked
+    // again, for this long. After that the phone is taken to have no call, so the UI cannot stay stuck.
+    private static readonly TimeSpan UnreadableRetryDelay = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan UnreadablePatience = TimeSpan.FromSeconds(10);
+
     private readonly Lock _gate = new();
     private readonly ICallTransportFactory _factory;
     private readonly ILog _log;
+    private readonly TimeProvider _time;
     private readonly HashSet<string> _handledCalls = new(StringComparer.Ordinal);
-    private readonly System.Collections.Concurrent.ConcurrentQueue<CallAction> _actions = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<QueuedAction> _actions = new();
 
     // Wishes, written by callers under the lock.
     private bool _enabled;
@@ -34,17 +40,25 @@ public sealed class CallsController : IDisposable
     // Worker bookkeeping.
     private bool _running;
     private bool _pending;
+    private bool _retryPending;
+
+    // The calls the published state describes, written by the worker under the lock. A request is bound to
+    // one of these at the moment it is made.
+    private string? _shownCallId;
+    private string? _ringingCallId;
 
     // Owned by the worker, except that Dispose may release the transport.
     private ICallTransport? _transport;
     private AudioSource? _claimedPhone;
     private bool _callWasLive;
+    private long? _unreadableSince;
     private CallsSnapshot _current = CallsSnapshot.Off;
 
-    public CallsController(ICallTransportFactory factory, ILog? log = null)
+    public CallsController(ICallTransportFactory factory, ILog? log = null, TimeProvider? time = null)
     {
         _factory = factory;
         _log = log ?? NullLog.Instance;
+        _time = time ?? TimeProvider.System;
     }
 
     /// <summary>Raised after the state changes, on whichever thread caused it. Read <see cref="Current"/>.</summary>
@@ -143,15 +157,20 @@ public sealed class CallsController : IDisposable
 
     private void Request(CallAction action)
     {
+        string? callId;
         lock (_gate)
         {
             if (_disposed)
             {
                 return;
             }
+
+            // Bound now to the call the user is looking at. Chosen later, a click could land on a call that
+            // only arrived after it.
+            callId = action is CallAction.Answer or CallAction.Decline ? _ringingCallId : _shownCallId;
         }
 
-        _actions.Enqueue(action);
+        _actions.Enqueue(new QueuedAction(action, callId));
         Kick();
     }
 
@@ -222,6 +241,7 @@ public sealed class CallsController : IDisposable
         if (!wanted)
         {
             _actions.Clear();
+            ShowCalls(null, null);
             Publish(new CallsSnapshot
             {
                 State = !enabled ? CallsState.Off : support != CallSupport.Available ? CallsState.Unavailable : CallsState.NoPhone,
@@ -241,6 +261,13 @@ public sealed class CallsController : IDisposable
             }
         }
 
+        // Claiming can take a while. If routing was switched off or another phone chosen meanwhile, stop
+        // here: the next step releases the role, and no call may be moved before it does.
+        if (!StillWanted())
+        {
+            return;
+        }
+
         var transport = _transport;
         if (transport is null)
         {
@@ -250,9 +277,25 @@ public sealed class CallsController : IDisposable
         if (connect)
         {
             await transport.ConnectAsync(CancellationToken.None).ConfigureAwait(false);
+            if (!StillWanted())
+            {
+                return;
+            }
         }
 
         await EvaluateCallsAsync(transport).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// True while the wishes still ask for calls from the phone the role is held for. Asked again after each
+    /// wait on Windows, because a wish can change during it and is otherwise only read at the next step.
+    /// </summary>
+    private bool StillWanted()
+    {
+        lock (_gate)
+        {
+            return !_disposed && _enabled && _phone is not null && _claimedPhone is not null && _phone.Id == _claimedPhone.Id;
+        }
     }
 
     private async Task<bool> ClaimAsync(AudioSource phone)
@@ -299,7 +342,11 @@ public sealed class CallsController : IDisposable
 
     private async Task EvaluateCallsAsync(ICallTransport transport)
     {
-        var calls = await transport.GetActiveCallsAsync(CancellationToken.None).ConfigureAwait(false);
+        var calls = await ReadCallsAsync(transport).ConfigureAwait(false);
+        if (calls is null)
+        {
+            return;
+        }
 
         if (!_actions.IsEmpty)
         {
@@ -308,7 +355,11 @@ public sealed class CallsController : IDisposable
                 await PerformAsync(transport, action, calls).ConfigureAwait(false);
             }
 
-            calls = await transport.GetActiveCallsAsync(CancellationToken.None).ConfigureAwait(false);
+            calls = await ReadCallsAsync(transport).ConfigureAwait(false);
+            if (calls is null)
+            {
+                return;
+            }
         }
 
         _handledCalls.IntersectWith(calls.Select(call => call.Id));
@@ -316,7 +367,17 @@ public sealed class CallsController : IDisposable
         foreach (var call in calls)
         {
             // Only a call the user is already talking on at the phone is moved; a ringing call is left alone.
-            if (call.Phase != CallPhase.Talking || call.OnPc || !transport.CanRouteToPc || !_handledCalls.Add(call.Id))
+            if (call.Phase != CallPhase.Talking || call.OnPc || !transport.CanRouteToPc)
+            {
+                continue;
+            }
+
+            if (!StillWanted())
+            {
+                return;
+            }
+
+            if (!_handledCalls.Add(call.Id))
             {
                 continue;
             }
@@ -328,6 +389,7 @@ public sealed class CallsController : IDisposable
 
         var current = PickCurrent(calls);
         var wasInCall = Current.State == CallsState.InCall;
+        ShowCalls(current?.Id, calls.FirstOrDefault(call => call.Phase == CallPhase.Incoming)?.Id);
 
         if (current is not null)
         {
@@ -366,10 +428,78 @@ public sealed class CallsController : IDisposable
     private static ActiveCall? PickCurrent(IReadOnlyList<ActiveCall> calls) =>
         calls.FirstOrDefault(call => call.Phase is CallPhase.Talking or CallPhase.Held) ?? calls.FirstOrDefault();
 
-    private async Task PerformAsync(ICallTransport transport, CallAction action, IReadOnlyList<ActiveCall> calls)
+    /// <summary>
+    /// The phone's calls, or null when Windows could not say. Null leaves the published state as it was and
+    /// arranges another look: an unanswered question is not the same as "no calls", which would end the
+    /// call in the UI and reopen the music link while someone is still talking.
+    /// </summary>
+    private async Task<IReadOnlyList<ActiveCall>?> ReadCallsAsync(ICallTransport transport)
     {
-        var ringing = calls.FirstOrDefault(call => call.Phase == CallPhase.Incoming);
-        var target = action is CallAction.Answer or CallAction.Decline ? ringing : PickCurrent(calls);
+        try
+        {
+            var calls = await transport.GetActiveCallsAsync(CancellationToken.None).ConfigureAwait(false);
+            _unreadableSince = null;
+            return calls;
+        }
+        catch (Exception ex)
+        {
+            _unreadableSince ??= _time.GetTimestamp();
+            if (_time.GetElapsedTime(_unreadableSince.Value) >= UnreadablePatience)
+            {
+                _unreadableSince = null;
+                _log.Warn(Category, $"Still could not read the phone's calls ({ex.Message}); assuming there are none.");
+                return [];
+            }
+
+            _log.Warn(Category, $"Could not read the phone's calls ({ex.Message}); keeping what was last known and asking again.");
+            RetryLater();
+            return null;
+        }
+    }
+
+    private void RetryLater()
+    {
+        lock (_gate)
+        {
+            if (_retryPending || _disposed)
+            {
+                return;
+            }
+
+            _retryPending = true;
+        }
+
+        _ = Task.Delay(UnreadableRetryDelay, _time).ContinueWith(
+            _ =>
+            {
+                lock (_gate)
+                {
+                    _retryPending = false;
+                }
+
+                Kick();
+            },
+            TaskScheduler.Default);
+    }
+
+    private void ShowCalls(string? shownCallId, string? ringingCallId)
+    {
+        lock (_gate)
+        {
+            _shownCallId = shownCallId;
+            _ringingCallId = ringingCallId;
+        }
+    }
+
+    private async Task PerformAsync(ICallTransport transport, QueuedAction request, IReadOnlyList<ActiveCall> calls)
+    {
+        var action = request.Action;
+        var target = request.CallId is null ? null : calls.FirstOrDefault(call => call.Id == request.CallId);
+        if (target is not null && (action is CallAction.Answer or CallAction.Decline) && target.Phase != CallPhase.Incoming)
+        {
+            target = null;
+        }
+
         if (target is null)
         {
             _log.Info(Category, $"Ignored '{action}': there is no call it applies to.");
@@ -420,6 +550,9 @@ public sealed class CallsController : IDisposable
             _claimedPhone = null;
             _handledCalls.Clear();
             _callWasLive = false;
+            _unreadableSince = null;
+            _shownCallId = null;
+            _ringingCallId = null;
             return transport;
         }
     }
@@ -453,6 +586,9 @@ public sealed class CallsController : IDisposable
         MoveToPc,
         MoveToPhone,
     }
+
+    /// <summary>What was asked for, and the call it was asked about (null when there was none to act on).</summary>
+    private readonly record struct QueuedAction(CallAction Action, string? CallId);
 
     private void Publish(CallsSnapshot snapshot)
     {

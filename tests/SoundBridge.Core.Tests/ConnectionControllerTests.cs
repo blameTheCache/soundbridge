@@ -881,6 +881,44 @@ public sealed class ConnectionControllerTests : IDisposable
         Assert.All(_factory.Links, link => Assert.True(link.OpenCalls <= 1));
     }
 
+    [Fact]
+    public void The_sessions_automatic_connect_gives_way_to_a_choice_the_user_already_made()
+    {
+        // The app is still starting when the user connects and then cancels.
+        _controller.Connect(Phone, ConnectOrigin.Manual);
+        _controller.Disconnect();
+
+        Assert.False(_controller.Connect(Phone, ConnectOrigin.SessionStart));
+
+        Assert.Equal(ConnectionPhase.Disconnected, _controller.Current.Phase);
+        Assert.Single(_factory.Links);
+        Assert.True(_log.Contains("already changed by hand"));
+    }
+
+    [Fact]
+    public void A_new_link_is_not_opened_while_the_old_one_is_still_closing()
+    {
+        _controller.Connect(Phone, ConnectOrigin.Manual);
+        _factory.Latest.CompleteOpen(LinkOpenStatus.Opened);
+        WaitFor(ConnectionPhase.Connected);
+        var first = _factory.Latest;
+        using var release = new ManualResetEventSlim();
+        first.HoldDispose = release;
+
+        // One thread is part-way through closing the old link when another asks for a new one.
+        var disconnecting = Task.Run(() => _controller.Disconnect());
+        Assert.True(first.DisposeStarted.Wait(TimeSpan.FromSeconds(5)));
+        var connecting = Task.Run(() => _controller.Connect(Phone, ConnectOrigin.Manual));
+        Until(() => _factory.Links.Count == 2);
+        Thread.Sleep(150);
+
+        Assert.Equal(0, _factory.Latest.OpenCalls);
+
+        release.Set();
+        Assert.True(Task.WaitAll([disconnecting, connecting], TimeSpan.FromSeconds(5)));
+        Until(() => _factory.Latest.OpenCalls == 1);
+    }
+
     private ConnectionController Create(ReconnectPolicy policy) => new(_factory, policy, _time, _log);
 
     private void Recreate(ReconnectPolicy policy)

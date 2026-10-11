@@ -23,7 +23,22 @@ public static class PhoneAudioSessions
             return false;
         }
 
-        return sessionDisplayName.Contains(phoneName.Trim(), StringComparison.OrdinalIgnoreCase)
-            && sessionDisplayName.Contains(MusicMarker, StringComparison.OrdinalIgnoreCase);
+        // The name has to fill the whole space between the opening bracket and "A2DP". Merely containing it
+        // would let "Pixel" claim the session of "Pixel 8" or of "Alice's Pixel".
+        var name = phoneName.Trim();
+        for (var at = sessionDisplayName.IndexOf(name, StringComparison.OrdinalIgnoreCase);
+             at >= 0;
+             at = sessionDisplayName.IndexOf(name, at + 1, StringComparison.OrdinalIgnoreCase))
+        {
+            var before = sessionDisplayName.AsSpan(0, at).TrimEnd();
+            var after = sessionDisplayName.AsSpan(at + name.Length);
+            var opensHere = before.IsEmpty || before[^1] is '(' or '（';
+            if (opensHere && after.Length > 0 && char.IsWhiteSpace(after[0]) && after.TrimStart().StartsWith(MusicMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

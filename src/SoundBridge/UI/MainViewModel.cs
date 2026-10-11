@@ -120,6 +120,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private ConnectionPhase _lastPhase;
     private PhoneVolume? _phoneVolume;
     private float? _pendingVolume;
+    private PhoneVolume? _unsavedVolume;
     private bool _applyingVolume;
     private bool _restoringVolume;
     private bool _windowVisible;
@@ -407,6 +408,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             }
 
             _phoneVolume = _phoneVolume with { Level = level };
+            _unsavedVolume = _phoneVolume;
             OnPropertyChanged();
             OnPropertyChanged(nameof(PhoneVolumeText));
             QueuePhoneVolume(level);
@@ -530,10 +532,12 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         // A new session starts each time the app starts. This is the only automatic connect that does not
         // follow an established connection, and it is the documented point where a manual disconnect from a
         // previous session stops applying. A phone first seen in this session is never connected unasked.
-        if (_settings.ConnectOnLaunch && _hadPreferredPhoneAtStart && _target is not null && !_disposed)
+        // The window is usable while the lines above wait; the controller declines this connect if the user
+        // has already connected or disconnected by hand.
+        if (_settings.ConnectOnLaunch && _hadPreferredPhoneAtStart && _target is not null && !_disposed
+            && _controller.Connect(_target, ConnectOrigin.SessionStart))
         {
             _log.Info(Category, "New session: connecting to the preferred phone.");
-            _controller.Connect(_target, ConnectOrigin.SessionStart);
         }
     }
 
@@ -564,6 +568,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        // A slider moved a moment ago has not been saved yet; without this the next launch restores the old level.
+        SaveUnsavedVolume();
         _disposed = true;
         _countdown.Stop();
         _volumeSettle.Stop();
@@ -831,7 +837,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                     continue;
                 }
 
-                var remembered = new PhoneVolume(_settings.PhoneVolumeLevel, _settings.PhoneMuted);
+                // What the slider holds is newer than what is on disk, which is written a moment after it rests.
+                var remembered = _unsavedVolume ?? _phoneVolume ?? new PhoneVolume(_settings.PhoneVolumeLevel, _settings.PhoneMuted);
                 if (!linkJustOpened)
                 {
                     RememberPhoneVolume(found);
@@ -937,14 +944,28 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private void OnPhoneVolumeSettled()
     {
         _volumeSettle.Stop();
-        if (_phoneVolume is not null && !_disposed)
+        if (!_disposed && SaveUnsavedVolume())
         {
-            RememberPhoneVolume(_phoneVolume);
-
             // Logging waits longer than saving: a spell of nudging the slider becomes one line, not one per nudge.
             _volumeLog.Stop();
             _volumeLog.Start();
         }
+    }
+
+    /// <summary>
+    /// Writes a slider change that is still waiting to be saved. Held apart from what is shown, which goes
+    /// away when the link closes.
+    /// </summary>
+    private bool SaveUnsavedVolume()
+    {
+        if (_unsavedVolume is not { } volume)
+        {
+            return false;
+        }
+
+        _unsavedVolume = null;
+        RememberPhoneVolume(volume);
+        return true;
     }
 
     private void OnPhoneVolumeLogDue()

@@ -36,7 +36,18 @@ internal sealed class FakeLink(AudioSource device) : IAudioLink
 
     public void RaiseClosed() => Closed?.Invoke(this, EventArgs.Empty);
 
-    public void Dispose() => DisposeCalls++;
+    /// <summary>Set once closing has begun, which with <see cref="HoldDispose"/> is before it ends.</summary>
+    public ManualResetEventSlim DisposeStarted { get; } = new();
+
+    /// <summary>When set, closing waits for it, like a link that Windows is slow to let go of.</summary>
+    public ManualResetEventSlim? HoldDispose { get; set; }
+
+    public void Dispose()
+    {
+        DisposeCalls++;
+        DisposeStarted.Set();
+        HoldDispose?.Wait(TimeSpan.FromSeconds(5));
+    }
 }
 
 internal sealed class FakeLinkFactory : IAudioLinkFactory

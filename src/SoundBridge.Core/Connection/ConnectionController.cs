@@ -21,6 +21,9 @@ public sealed class ConnectionController : IDisposable
     private const string Category = "Connection";
 
     private readonly Lock _gate = new();
+
+    // Held while retired links are closed. Taken before _gate, never the other way round.
+    private readonly Lock _closing = new();
     private readonly IAudioLinkFactory _factory;
     private readonly TimeProvider _time;
     private readonly ILog _log;
@@ -36,6 +39,7 @@ public sealed class ConnectionController : IDisposable
     private bool _recoverable;
     private bool _bluetoothOn = true;
     private bool _resumeOnWake;
+    private bool _userDecided;
     private bool _disposed;
     private DateTimeOffset? _waitingSince;
     private DateTimeOffset _lastCheckEnded = DateTimeOffset.MinValue;
@@ -84,6 +88,16 @@ public sealed class ConnectionController : IDisposable
                 return false;
             }
 
+            // The session's automatic connect is decided while the app starts, which takes a moment. If the
+            // user has connected or disconnected by hand in that moment, their choice stands.
+            if (origin == ConnectOrigin.SessionStart && _userDecided)
+            {
+                _log.Info(Category, $"Ignored the session's automatic connect to '{device.Name}': the connection was already changed by hand.");
+                return false;
+            }
+
+            _userDecided |= origin == ConnectOrigin.Manual;
+
             var sameDevice = _device is not null && string.Equals(_device.Id, device.Id, StringComparison.Ordinal);
             if (sameDevice && _current.Phase is ConnectionPhase.Connecting or ConnectionPhase.Connected)
             {
@@ -127,6 +141,7 @@ public sealed class ConnectionController : IDisposable
 
             _recoverable = false;
             _resumeOnWake = false;
+            _userDecided = true;
             if (_current.Phase == ConnectionPhase.Disconnected)
             {
                 return;
@@ -665,19 +680,26 @@ public sealed class ConnectionController : IDisposable
     /// </summary>
     private void Flush(Attempt? toStart)
     {
-        Attempt[] retired;
         bool changed;
-        lock (_gate)
-        {
-            retired = [.. _retired];
-            _retired.Clear();
-            changed = !ReferenceEquals(_current, _lastRaised);
-            _lastRaised = _current;
-        }
 
-        foreach (var attempt in retired)
+        // One thread closes links at a time, and each takes whatever is retired once it is its turn. A second
+        // thread arriving with a link to open therefore waits here until every older link is fully closed,
+        // instead of finding nothing left to close and opening alongside a link that is still closing.
+        lock (_closing)
         {
-            attempt.Retire(_log);
+            Attempt[] retired;
+            lock (_gate)
+            {
+                retired = [.. _retired];
+                _retired.Clear();
+                changed = !ReferenceEquals(_current, _lastRaised);
+                _lastRaised = _current;
+            }
+
+            foreach (var attempt in retired)
+            {
+                attempt.Retire(_log);
+            }
         }
 
         if (changed)
