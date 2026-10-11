@@ -95,7 +95,8 @@ dotnet run --project src/SoundBridge
 | Couldn't connect / Connection lost | The last attempt failed and nothing is scheduled. | Connect |
 
 "Connected" means the link is open. **"Playing"** replaces it only while the phone's audio is actually
-measured above silence: Windows keeps a level meter for the phone's stream, and SoundBridge reads it. No
+measured above silence: Windows keeps a level meter for the phone's stream, and SoundBridge reads it. It
+stays for about four seconds after the last sound, so the gap between two tracks does not flick it off. No
 latency figures are shown, because nothing measures them.
 
 ### The live indicator

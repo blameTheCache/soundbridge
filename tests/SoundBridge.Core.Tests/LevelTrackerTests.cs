@@ -41,16 +41,16 @@ public sealed class LevelTrackerTests
     }
 
     [Fact]
-    public void A_short_gap_between_sounds_does_not_end_playing()
+    public void A_gap_between_tracks_does_not_end_playing()
     {
         var tracker = new LevelTracker();
         tracker.Push(0.05f, Frame);
 
-        Feed(tracker, 0f, TimeSpan.FromSeconds(1.2));
+        Assert.Equal(0, Feed(tracker, 0f, TimeSpan.FromSeconds(3.5)));
         Assert.True(tracker.IsPlaying);
 
         tracker.Push(0.05f, Frame);
-        Feed(tracker, 0f, TimeSpan.FromSeconds(1.2));
+        Assert.Equal(0, Feed(tracker, 0f, TimeSpan.FromSeconds(3.5)));
         Assert.True(tracker.IsPlaying);
     }
 
@@ -60,7 +60,7 @@ public sealed class LevelTrackerTests
         var tracker = new LevelTracker();
         tracker.Push(0.05f, Frame);
 
-        var changes = Feed(tracker, 0f, TimeSpan.FromSeconds(3));
+        var changes = Feed(tracker, 0f, TimeSpan.FromSeconds(6));
 
         Assert.False(tracker.IsPlaying);
         Assert.Equal(1, changes);

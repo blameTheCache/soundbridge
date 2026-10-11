@@ -17,7 +17,8 @@ public sealed class LevelTracker
     public const float SilenceThreshold = 0.0005f;
 
     private static readonly TimeSpan HistoryStep = TimeSpan.FromMilliseconds(50);
-    private static readonly TimeSpan PlayingHold = TimeSpan.FromSeconds(1.5);
+    // Long enough to bridge the silence between two tracks, so the indicator does not drop out and return.
+    private static readonly TimeSpan PlayingHold = TimeSpan.FromSeconds(4);
     private const float FloorDecibels = -60f;
     private const float DecayPerSecond = 2.2f;
 
@@ -30,7 +31,7 @@ public sealed class LevelTracker
     /// <summary>Current level from 0 to 1 on a decibel scale: rises at once, falls gradually.</summary>
     public float Level { get; private set; }
 
-    /// <summary>True while sound has been measured within the last second and a half.</summary>
+    /// <summary>True while sound has been measured within the last four seconds.</summary>
     public bool IsPlaying { get; private set; }
 
     /// <summary>How far, from 0 to 1, the tracker is into the current history slot. Lets a display scroll smoothly.</summary>

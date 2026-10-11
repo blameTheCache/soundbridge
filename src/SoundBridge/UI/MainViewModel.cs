@@ -108,6 +108,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly IAppShell _shell;
     private readonly DispatcherTimer _countdown;
     private readonly DispatcherTimer _volumeSettle;
+    private readonly DispatcherTimer _volumeLog;
 
     private AppSettings _settings;
     private AudioSource? _target;
@@ -191,6 +192,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
         _countdown = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => RefreshPresentation(), dispatcher) { IsEnabled = false };
         _volumeSettle = new DispatcherTimer(TimeSpan.FromMilliseconds(700), DispatcherPriority.Background, (_, _) => OnPhoneVolumeSettled(), dispatcher) { IsEnabled = false };
+        _volumeLog = new DispatcherTimer(TimeSpan.FromSeconds(5), DispatcherPriority.Background, (_, _) => OnPhoneVolumeLogDue(), dispatcher) { IsEnabled = false };
 
         _controller.Changed += OnConnectionChanged;
         _calls.Changed += OnCallsChanged;
@@ -565,6 +567,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _disposed = true;
         _countdown.Stop();
         _volumeSettle.Stop();
+        _volumeLog.Stop();
         LevelMeter.PlayingChanged -= OnPlayingChanged;
         LevelMeter.Dispose();
         _controller.Changed -= OnConnectionChanged;
@@ -930,13 +933,25 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
     }
 
-    /// <summary>Runs once the slider has been still for a moment, so a drag is saved and logged as one change.</summary>
+    /// <summary>Runs once the slider has been still for a moment, so a drag is saved as one change.</summary>
     private void OnPhoneVolumeSettled()
     {
         _volumeSettle.Stop();
         if (_phoneVolume is not null && !_disposed)
         {
             RememberPhoneVolume(_phoneVolume);
+
+            // Logging waits longer than saving: a spell of nudging the slider becomes one line, not one per nudge.
+            _volumeLog.Stop();
+            _volumeLog.Start();
+        }
+    }
+
+    private void OnPhoneVolumeLogDue()
+    {
+        _volumeLog.Stop();
+        if (_phoneVolume is not null && !_disposed)
+        {
             _log.Info(Category, $"Phone volume on this PC set to {_phoneVolume.Level:P0}.");
         }
     }
