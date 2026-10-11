@@ -2,6 +2,8 @@
 
 Hear your Android phone and your Windows laptop at the same time, through whatever is plugged into the laptop.
 
+![SoundBridge playing a phone's audio on a Windows PC, shown in the Sand, Midnight and Ember themes. Each window has a ring of coloured bars around a phone icon, the status "Playing", a volume slider for the phone and a Disconnect button.](docs/images/soundbridge.png)
+
 SoundBridge makes a Windows 10 or Windows 11 PC behave like a Bluetooth speaker or headset for your phone, so
 the phone's music, videos and podcasts play through the PC's headphones or speakers alongside the PC's own
 sound. It turns the PC into a Bluetooth audio receiver for one phone, using the A2DP sink that has been
@@ -19,6 +21,11 @@ the PC, and the call moves to the PC's speaker or headphones and microphone.
 - **Reconnects by itself** after a dropped link, and never after you disconnect on purpose.
 - **Tray icon and launch at sign-in**, with three dark and three light themes.
 - **Nothing to install on the phone**, and no audio is recorded or sent anywhere.
+
+![The SoundBridge window in each of its six themes: Graphite, Midnight and Ember (dark), and Paper, Mist and Sand (light).](docs/images/themes.png)
+
+<sub>The screenshots show the real app playing audio from a phone used for testing. The name on screen is
+only that phone's Bluetooth name; SoundBridge is not affiliated with or endorsed by its maker.</sub>
 
 ## Download
 
