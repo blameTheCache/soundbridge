@@ -33,7 +33,14 @@ Each line is timestamped; the `[Connection]` and `[Bluetooth]` lines around the 
 | B2 | Click **Connect**. | Spinner and "Connecting…", then a green ring, "Connected" and "Since hh:mm". The list row reads "Connected". |
 | B3 | Play media on the phone. | Phone audio is heard in the headphones **together with** the laptop audio. |
 | B4 | Change the phone's media volume. | Note what happens to the phone's loudness in the headphones (this is the investigation item in the README). |
-| B5 | Open Windows **Volume mixer** while connected. | Note whether the phone appears as its own entry, and under what name. |
+| B5 | Open Windows **Volume mixer** while connected. | The phone appears as its own entry, named after the phone ("… A2DP SNK"). Confirmed. |
+| B3a | Play music on the phone with the SoundBridge window open. | Within a second or two the status changes from "Connected" to "Playing" and a ring of coloured bars moves around the phone, livelier on loud passages. |
+| B3b | Pause the music on the phone. | About two seconds later the ring fades out and the status returns to "Connected". |
+| B3c | Close the window to the tray while music plays, then hover the tray icon. | The tooltip says "Connected", not "Playing": nothing is sampled while the window is hidden. |
+| B5a | Play music on the phone and drag SoundBridge's volume slider. | The phone gets quieter and louder in the headphones; laptop sounds do not change, and neither does the volume shown on the phone. The mixer entry from B5 moves with the slider. |
+| B5b | Set the slider to about a third, disconnect, connect again. | The slider and the loudness are where you left them. |
+| B5c | Change the phone's entry in the Windows Volume mixer, then click the SoundBridge window. | The slider moves to the new level. |
+| B5d | Click the speaker button beside the slider. | The phone goes silent on the PC and the label reads "Muted"; clicking again restores it. |
 | B6 | Click **Disconnect**. | "Not connected". Phone audio stops in the headphones; the phone plays through its own speaker or pauses. Laptop audio continues. |
 
 ## C. Duplicate requests and cancelling

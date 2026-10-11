@@ -5,6 +5,7 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 using SoundBridge.Bluetooth;
+using SoundBridge.Core.Audio;
 using SoundBridge.Core.Calls;
 using SoundBridge.Core.Connection;
 using SoundBridge.Core.Diagnostics;
@@ -98,6 +99,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly AudioSourceWatcher _watcher;
     private readonly BluetoothRadioMonitor _radio;
     private readonly PhonePresenceMonitor _presence;
+    private readonly PhoneVolumeControl _volume;
     private readonly SettingsStore _store;
     private readonly StartupRegistration _startup;
     private readonly ThemeManager _themes;
@@ -105,6 +107,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly IAppShell _shell;
     private readonly DispatcherTimer _countdown;
+    private readonly DispatcherTimer _volumeSettle;
 
     private AppSettings _settings;
     private AudioSource? _target;
@@ -114,6 +117,12 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private bool _syncingSelection;
     private bool _radioUnavailable;
     private ConnectionPhase _lastPhase;
+    private PhoneVolume? _phoneVolume;
+    private float? _pendingVolume;
+    private bool _applyingVolume;
+    private bool _restoringVolume;
+    private bool _windowVisible;
+    private bool _wasPlaying;
     private long _lastPrimaryPress = -DoubleClickGuardMilliseconds;
     private bool _launchAtSignIn;
     private bool _isSettingsOpen;
@@ -140,6 +149,9 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         _watcher = watcher;
         _radio = radio;
         _presence = presence;
+        _volume = new PhoneVolumeControl(log);
+        LevelMeter = new PhoneLevelMeter(log);
+        LevelMeter.PlayingChanged += OnPlayingChanged;
         _store = store;
         _settings = settings;
         _startup = startup;
@@ -175,8 +187,10 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         HangUpCommand = new RelayCommand(() => CallAction("Hang up", _calls.HangUp));
         ToggleMuteCommand = new RelayCommand(() => CallAction(CallMuteText, () => _calls.SetMuted(!_calls.Current.CallMuted)));
         ToggleCallDeviceCommand = new RelayCommand(() => CallAction(CallMoveText, () => _calls.MoveCall(!_calls.Current.CallOnPc)));
+        TogglePhoneMuteCommand = new RelayCommand(TogglePhoneMute, () => HasPhoneVolume);
 
         _countdown = new DispatcherTimer(TimeSpan.FromMilliseconds(250), DispatcherPriority.Background, (_, _) => RefreshPresentation(), dispatcher) { IsEnabled = false };
+        _volumeSettle = new DispatcherTimer(TimeSpan.FromMilliseconds(700), DispatcherPriority.Background, (_, _) => OnPhoneVolumeSettled(), dispatcher) { IsEnabled = false };
 
         _controller.Changed += OnConnectionChanged;
         _calls.Changed += OnCallsChanged;
@@ -227,6 +241,8 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     public ICommand ToggleMuteCommand { get; }
 
     public ICommand ToggleCallDeviceCommand { get; }
+
+    public ICommand TogglePhoneMuteCommand { get; }
 
     public DeviceItem? SelectedDevice
     {
@@ -360,6 +376,46 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
             }
         }
     }
+
+    /// <summary>Samples the phone's audio level while the window is on screen. The live indicator draws from it.</summary>
+    public PhoneLevelMeter LevelMeter { get; }
+
+    /// <summary>True while audio from the phone has actually been measured, not merely while the link is open.</summary>
+    public bool IsPhonePlaying => LevelMeter.IsPlaying && _controller.Current.Phase == ConnectionPhase.Connected;
+
+    /// <summary>
+    /// True while Windows has a music stream for the phone whose volume can be read and set. The slider is
+    /// shown only then, so it never offers a control that would do nothing.
+    /// </summary>
+    public bool HasPhoneVolume => _phoneVolume is not null && _controller.Current.Phase == ConnectionPhase.Connected;
+
+    /// <summary>
+    /// How loud the phone's music is on this PC, 0 to 100. It is the phone's entry in the Windows Volume mixer:
+    /// separate from the phone's own volume and from every other sound on the PC.
+    /// </summary>
+    public double PhoneVolumePercent
+    {
+        get => Math.Round((_phoneVolume?.Level ?? 1f) * 100);
+        set
+        {
+            var level = (float)Math.Clamp(value / 100, 0, 1);
+            if (_phoneVolume is null || Math.Abs(level - _phoneVolume.Level) < 0.005f)
+            {
+                return;
+            }
+
+            _phoneVolume = _phoneVolume with { Level = level };
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(PhoneVolumeText));
+            QueuePhoneVolume(level);
+        }
+    }
+
+    public bool IsPhoneMuted => _phoneVolume?.Muted == true;
+
+    public string PhoneVolumeText => IsPhoneMuted ? "Muted" : $"{PhoneVolumePercent:0}%";
+
+    public string PhoneVolumeGlyph => IsPhoneMuted ? "" : "";
 
     /// <summary>After the quick retries, go on checking for the phone instead of giving up.</summary>
     public bool KeepWaitingForPhone
@@ -508,6 +564,9 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
 
         _disposed = true;
         _countdown.Stop();
+        _volumeSettle.Stop();
+        LevelMeter.PlayingChanged -= OnPlayingChanged;
+        LevelMeter.Dispose();
         _controller.Changed -= OnConnectionChanged;
         _calls.Changed -= OnCallsChanged;
         _calls.CallEnded -= OnCallEnded;
@@ -645,7 +704,14 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         if (phase == ConnectionPhase.Connected && _lastPhase != ConnectionPhase.Connected)
         {
             _calls.NotifyPhoneReachable();
+            _ = RestorePhoneVolumeAsync();
         }
+        else if (phase != ConnectionPhase.Connected)
+        {
+            ShowPhoneVolume(null);
+        }
+
+        UpdateLevelMeter();
 
         _lastPhase = phase;
         RefreshPresentation();
@@ -671,6 +737,222 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     {
         _controller.NotifyPhoneSeen();
         _calls.NotifyPhoneReachable();
+    }
+
+    /// <summary>
+    /// Re-reads the phone's volume from Windows. It can also be changed in the Windows Volume mixer, so this
+    /// runs when the window comes forward rather than on a timer.
+    /// </summary>
+    /// <summary>
+    /// Called by the window when it appears, is hidden or is minimised. The level is sampled only while
+    /// there is something on screen to show it, so a hidden app does no sampling.
+    /// </summary>
+    public void SetWindowVisible(bool visible)
+    {
+        _windowVisible = visible;
+        UpdateLevelMeter();
+    }
+
+    private void UpdateLevelMeter()
+    {
+        if (!_disposed && _windowVisible && _target?.Name is { } name && _controller.Current.Phase == ConnectionPhase.Connected)
+        {
+            LevelMeter.Start(name);
+        }
+        else
+        {
+            LevelMeter.Stop();
+        }
+    }
+
+    private void OnPlayingChanged(object? sender, EventArgs e) => _dispatcher.BeginInvoke(() =>
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_wasPlaying != IsPhonePlaying)
+        {
+            _wasPlaying = IsPhonePlaying;
+            _log.Info(Category, _wasPlaying ? "The phone's audio started." : "The phone's audio stopped.");
+        }
+
+        RefreshPresentation();
+    });
+
+    public void RefreshPhoneVolume()
+    {
+        // While a just-opened link is being brought back to the remembered level, Windows still holds its own
+        // default; reading that now would mistake it for something the user chose.
+        if (!_restoringVolume)
+        {
+            _ = SyncPhoneVolumeAsync(linkJustOpened: false);
+        }
+    }
+
+    /// <summary>
+    /// Brings the slider and Windows into agreement. Windows starts every new stream at full volume, so when
+    /// the link has just opened the remembered level is put back; at any other time whatever Windows holds
+    /// wins, because the user may have changed it in the Volume mixer.
+    /// </summary>
+    private async Task SyncPhoneVolumeAsync(bool linkJustOpened)
+    {
+        try
+        {
+            // The stream appears a moment after the link opens. Look often at first so that a remembered
+            // low volume is back before much audio has played at full volume.
+            var attempts = linkJustOpened ? 15 : 1;
+            for (var attempt = 0; attempt < attempts && !_disposed; attempt++)
+            {
+                if (attempt > 0)
+                {
+                    await Task.Delay(300);
+                }
+
+                var name = _target?.Name;
+                if (name is null || _controller.Current.Phase != ConnectionPhase.Connected)
+                {
+                    return;
+                }
+
+                var found = await Task.Run(() => _volume.Read(name));
+                if (_applyingVolume)
+                {
+                    // The slider is being moved right now; what it holds is newer than what was just read.
+                    return;
+                }
+
+                if (found is null)
+                {
+                    continue;
+                }
+
+                var remembered = new PhoneVolume(_settings.PhoneVolumeLevel, _settings.PhoneMuted);
+                if (!linkJustOpened)
+                {
+                    RememberPhoneVolume(found);
+                    ShowPhoneVolume(found);
+                    return;
+                }
+
+                // Keep going for the whole window instead of stopping at the first sighting: for a moment
+                // Windows can still list the previous link's stream, and the new one arrives at full volume.
+                if (Math.Abs(found.Level - remembered.Level) >= 0.005f || found.Muted != remembered.Muted)
+                {
+                    await Task.Run(() =>
+                    {
+                        _volume.SetLevel(name, remembered.Level);
+                        _volume.SetMuted(name, remembered.Muted);
+                    });
+                    _log.Info(Category, $"Put the phone's volume on this PC back to {remembered.Level:P0}{(remembered.Muted ? ", muted" : string.Empty)}.");
+                }
+
+                ShowPhoneVolume(remembered);
+            }
+
+            if (!linkJustOpened || _phoneVolume is null)
+            {
+                ShowPhoneVolume(null);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn(Category, $"Could not read the phone's volume: {ex.Message}");
+        }
+    }
+
+    private async Task RestorePhoneVolumeAsync()
+    {
+        _restoringVolume = true;
+        try
+        {
+            await SyncPhoneVolumeAsync(linkJustOpened: true);
+        }
+        finally
+        {
+            _restoringVolume = false;
+        }
+    }
+
+    private void RememberPhoneVolume(PhoneVolume volume) =>
+        Save(_settings with { PhoneVolumeLevel = volume.Level, PhoneMuted = volume.Muted });
+
+    private void ShowPhoneVolume(PhoneVolume? volume)
+    {
+        if (_phoneVolume == volume)
+        {
+            return;
+        }
+
+        _phoneVolume = volume;
+        OnPropertyChanged(nameof(HasPhoneVolume));
+        OnPropertyChanged(nameof(PhoneVolumePercent));
+        OnPropertyChanged(nameof(PhoneVolumeText));
+        OnPropertyChanged(nameof(PhoneVolumeGlyph));
+        OnPropertyChanged(nameof(IsPhoneMuted));
+        CommandManager.InvalidateRequerySuggested();
+    }
+
+    /// <summary>Applies slider movements one at a time, always ending on the latest position.</summary>
+    private async void QueuePhoneVolume(float level)
+    {
+        // Each movement restarts the wait; saving and logging happen when the slider comes to rest.
+        _volumeSettle.Stop();
+        _volumeSettle.Start();
+
+        _pendingVolume = level;
+        if (_applyingVolume)
+        {
+            return;
+        }
+
+        _applyingVolume = true;
+        try
+        {
+            while (_pendingVolume is { } next)
+            {
+                _pendingVolume = null;
+                if (_target?.Name is { } name)
+                {
+                    await Task.Run(() => _volume.SetLevel(name, next));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.Warn(Category, $"Could not set the phone's volume: {ex.Message}");
+        }
+        finally
+        {
+            _applyingVolume = false;
+        }
+
+    }
+
+    /// <summary>Runs once the slider has been still for a moment, so a drag is saved and logged as one change.</summary>
+    private void OnPhoneVolumeSettled()
+    {
+        _volumeSettle.Stop();
+        if (_phoneVolume is not null && !_disposed)
+        {
+            RememberPhoneVolume(_phoneVolume);
+            _log.Info(Category, $"Phone volume on this PC set to {_phoneVolume.Level:P0}.");
+        }
+    }
+
+    private void TogglePhoneMute()
+    {
+        if (_phoneVolume is null || _target?.Name is not { } name)
+        {
+            return;
+        }
+
+        var muted = !_phoneVolume.Muted;
+        _log.Info(Category, $"Phone audio on this PC {(muted ? "muted" : "unmuted")}.");
+        ShowPhoneVolume(_phoneVolume with { Muted = muted });
+        RememberPhoneVolume(_phoneVolume!);
+        _ = Task.Run(() => _volume.SetMuted(name, muted));
     }
 
     private void CallAction(string name, Action action)
@@ -785,7 +1067,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         var snapshot = _controller.Current;
-        _presentation = ConnectionPresenter.Describe(snapshot, _target is not null, Devices.Count > 0, DateTimeOffset.Now);
+        _presentation = ConnectionPresenter.Describe(snapshot, _target is not null, Devices.Count > 0, DateTimeOffset.Now, IsPhonePlaying);
         _countdown.IsEnabled = snapshot.Phase == ConnectionPhase.WaitingToRetry;
 
         foreach (var device in Devices)
@@ -796,6 +1078,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                 ? "Not connected"
                 : snapshot.Phase switch
                 {
+                    ConnectionPhase.Connected when IsPhonePlaying => "Playing",
                     ConnectionPhase.Connected => "Connected",
                     ConnectionPhase.Connecting when snapshot.BackgroundCheck => "Checking…",
                     ConnectionPhase.WaitingForPhone => "Waiting for phone",
@@ -811,6 +1094,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(StatusDetail));
         OnPropertyChanged(nameof(PrimaryText));
         OnPropertyChanged(nameof(PrimaryIsAccent));
+        OnPropertyChanged(nameof(IsPhonePlaying));
         OnPropertyChanged(nameof(CanChooseDevice));
         OnPropertyChanged(nameof(TrayActionText));
         OnPropertyChanged(nameof(TrayTooltip));

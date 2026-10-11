@@ -154,6 +154,9 @@ public partial class App : Application, IAppShell
 
         // Whether the prompt is needed depends on whether the main window, which has the same buttons, is in front.
         _window.Activated += (_, _) => UpdateCallPrompt();
+
+        // The phone's volume can also be changed in the Windows Volume mixer; catch up when the window comes forward.
+        _window.Activated += (_, _) => viewModel.RefreshPhoneVolume();
         _window.Deactivated += (_, _) => UpdateCallPrompt();
 
         var tray = _tray = new TrayIcon(log);

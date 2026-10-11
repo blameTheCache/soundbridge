@@ -20,11 +20,18 @@ internal sealed record ConnectionPresentation(StatusTone Tone, string Title, str
 /// </summary>
 internal static class ConnectionPresenter
 {
-    public static ConnectionPresentation Describe(ConnectionSnapshot snapshot, bool hasTarget, bool hasSources, DateTimeOffset now)
+    /// <param name="playing">
+    /// True only when the phone's audio level has actually been measured above silence. An open link alone
+    /// is "Connected"; "Playing" is said only on that evidence.
+    /// </param>
+    public static ConnectionPresentation Describe(ConnectionSnapshot snapshot, bool hasTarget, bool hasSources, DateTimeOffset now, bool playing = false)
     {
         var max = snapshot.MaxRetries;
         return snapshot.Phase switch
         {
+            ConnectionPhase.Connected when playing =>
+                new(StatusTone.On, "Playing", $"Since {snapshot.ConnectedAt:t}. The phone's audio is coming out of this PC's current output device.", "Disconnect"),
+
             ConnectionPhase.Connecting when snapshot.BackgroundCheck =>
                 new(StatusTone.Busy, "Checking for the phone…", "Seeing whether it is back in range.", "Cancel"),
 

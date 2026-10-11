@@ -48,6 +48,8 @@ public sealed class SettingsStoreTests : IDisposable
             RouteCalls = true,
             ShowCallPrompt = false,
             KeepWaitingForPhone = false,
+            PhoneVolumeLevel = 0.35f,
+            PhoneMuted = true,
             Theme = "sand",
         };
 
@@ -75,11 +77,12 @@ public sealed class SettingsStoreTests : IDisposable
     public void Out_of_range_values_are_normalised_on_load()
     {
         Directory.CreateDirectory(_directory);
-        File.WriteAllText(FilePath, """{ "maxReconnectAttempts": 500, "theme": "  ", "preferredDeviceId": "", "preferredDeviceName": "ghost" }""");
+        File.WriteAllText(FilePath, """{ "maxReconnectAttempts": 500, "theme": "  ", "preferredDeviceId": "", "preferredDeviceName": "ghost", "phoneVolumeLevel": 7.5 }""");
 
         var settings = new SettingsStore(FilePath, _log).Load();
 
         Assert.Equal(10, settings.MaxReconnectAttempts);
+        Assert.Equal(1f, settings.PhoneVolumeLevel);
         Assert.Equal(AppSettings.DefaultTheme, settings.Theme);
         Assert.Null(settings.PreferredDeviceId);
         Assert.Null(settings.PreferredDeviceName);

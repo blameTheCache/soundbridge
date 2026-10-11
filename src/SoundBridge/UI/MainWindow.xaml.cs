@@ -29,6 +29,10 @@ internal partial class MainWindow : Window
 
         viewModel.PropertyChanged += OnViewModelPropertyChanged;
         themes.Changed += OnThemeChanged;
+
+        // The phone's audio level is sampled only while this window can show it.
+        IsVisibleChanged += (_, _) => ReportVisibility();
+        StateChanged += (_, _) => ReportVisibility();
         ApplyTone(viewModel.Tone);
     }
 
@@ -116,6 +120,8 @@ internal partial class MainWindow : Window
     }
 
     private void OnThemeChanged(object? sender, EventArgs e) => ApplyWindowFrame();
+
+    private void ReportVisibility() => _viewModel.SetWindowVisible(IsVisible && WindowState != WindowState.Minimized);
 
     private void OnMinimizeClick(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
 

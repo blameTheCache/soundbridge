@@ -87,14 +87,31 @@ dotnet run --project src/SoundBridge
 | Not connected | No link, nothing pending. | Connect |
 | Connecting… / Reconnecting… | A request to Windows is in flight. | Cancel |
 | Connected | Windows reports the audio link as open. | Disconnect |
+| Playing | The link is open and the phone's audio is measurably above silence. | Disconnect |
 | Reconnecting in N s | An automatic retry is scheduled. | Cancel |
 | Waiting for Bluetooth | The PC's Bluetooth is off; reconnection resumes when it returns. | Cancel |
 | Waiting for the phone | The quick retries ran out; the phone is checked for every two minutes. | Cancel |
 | Checking for the phone… | One of those checks is in flight. | Cancel |
 | Couldn't connect / Connection lost | The last attempt failed and nothing is scheduled. | Connect |
 
-"Connected" means the link is open. SoundBridge cannot see whether the phone is actually playing, so it
-never says so, and it shows no level meters or latency figures.
+"Connected" means the link is open. **"Playing"** replaces it only while the phone's audio is actually
+measured above silence: Windows keeps a level meter for the phone's stream, and SoundBridge reads it. No
+latency figures are shown, because nothing measures them.
+
+### The live indicator
+
+While the phone is playing, a ring of coloured bars moves around the phone on the main screen.
+
+- **It is drawn from measurements.** Each bar is how loud the phone was at one moment; the newest reading
+  is at the head of the ring and older ones trail away down both sides. It is a short history of loudness,
+  not a spectrum analyser: Windows reports how loud the stream is, not what frequencies are in it.
+- **Scale.** Music stays in a narrow band of loudness, so the ring stretches the band in use across the
+  bars' full travel. The readings are not altered, only the scale they are drawn on.
+- **Cost.** The level is sampled about thirty times a second, and only while the window is on screen and
+  the link is open. Hidden in the tray, SoundBridge samples nothing, so the tray icon and tooltip say
+  "Connected" rather than "Playing". Measured on hardware with real audio: about 3% of one processor core
+  while the ring animates, and none while nothing is playing.
+- **Audio is not captured.** Only the level Windows already computes is read.
 
 ### Automatic reconnection
 
@@ -128,6 +145,18 @@ timer, not waking from sleep, not Bluetooth coming back — until you click **Co
 default), the remembered phone is connected at start-up, including after a manual disconnect in the previous
 session. Turn that setting off if you want a disconnect to survive restarts. A phone that SoundBridge sees
 for the first time is never connected automatically.
+
+### Phone volume
+
+While connected, a slider under the status sets how loud the phone's music is **on this PC**. It is the
+phone's own entry in the Windows Volume mixer, so it changes neither the phone's own volume nor any other
+sound on the PC. The speaker button beside it mutes just the phone.
+
+- The slider is shown only while Windows actually has a stream for the phone.
+- The level is remembered. Windows may start a new stream at full volume when the link is reopened, so
+  SoundBridge puts the remembered level back each time it connects, including after a call.
+- If you change the level in the Windows Volume mixer instead, the slider catches up the next time the
+  window comes to the front; it does not poll.
 
 ### Phone calls
 
@@ -191,6 +220,8 @@ There are no third-party packages in the shipped app.
 src/SoundBridge.Core        no Windows APIs; fully unit-tested
   Connection/               ConnectionController (state + reconnection), ReconnectPolicy, IAudioLink
   Calls/                    CallsController (holds the hands-free role, moves calls), ICallTransport
+  Audio/                    PhoneAudioSessions (which Windows audio session is the phone's music),
+                            LevelTracker (smoothed level, level history, "is it playing")
   Settings/                 AppSettings, SettingsStore (JSON, atomic write, falls back to defaults)
   Diagnostics/              ILog, FileLog (daily files, retention, size cap)
 
@@ -199,7 +230,8 @@ src/SoundBridge             the Windows app
                             BluetoothRadioMonitor, PhoneCallTransport (PhoneLineTransportDevice),
                             PhonePresenceMonitor (BluetoothDevice connection status)
   Platform/                 TrayIcon (Shell_NotifyIcon), StartupRegistration (Run key or startup task),
-                            PowerMonitor, SingleInstance, AppIdentity (packaged or not, why started)
+                            PowerMonitor, SingleInstance, AppIdentity (packaged or not, why started),
+                            PhoneVolumeControl and PhoneLevelMeter (Core Audio session volume and level)
   UI/                       MainWindow, CallPromptWindow, MainViewModel, ConnectionPresenter,
                             ThemeManager, Styles
   App.xaml.cs               composition root
@@ -234,7 +266,7 @@ threads and never depends on the UI thread.
 
 ### Automated (run on every `build.ps1`)
 
-108 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
+136 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
 
 - duplicate connect requests while connecting or connected start nothing new;
 - manual disconnect cancels an in-flight attempt, ignores its late success, cancels a pending retry, and is
@@ -296,6 +328,13 @@ By the project owner in October 2026, on the same setup, running Windows 11:
 - **Sleep and resume:** one sleep of about four hours. Windows delivered both the suspend and the resume
   notification; the calls link was back 14 seconds after waking; and music, which had been disconnected by
   hand before the sleep, correctly stayed disconnected.
+- **Live indicator:** with the phone playing, the app logged "The phone's audio started" two seconds after
+  connecting and showed "Playing" with the ring moving. Whether the ring follows the music convincingly is
+  a matter for the eye and has not been judged by anyone but the author's screenshots.
+- **Phone volume slider:** setting it to 63, 29 and 35 changed the Windows-side level to match within a
+  tenth of a second, read back by a separate program each time; the saved 35% was still in force after a
+  disconnect and reconnect. Putting a remembered level back onto a stream that Windows had reset to 100%
+  was not seen in that run, because Windows kept the level by itself that time.
 - **Answering from the PC:** a later call in the same session shows the prompt appearing, **Answer** being
   clicked ten seconds later and accepted by Windows, the call then moving to the PC, and the music link
   reopening when it ended.
@@ -332,14 +371,16 @@ static `GetDeviceSelector` and `TryCreateFromId`. There is nothing for volume, l
 The audio is rendered by Windows itself, not by this process, so SoundBridge has no audio stream of its own
 to adjust or redirect.
 
-- **Independent phone volume** — not available through this API. It may be reachable with the Core Audio
-  session APIs (`IAudioSessionManager2`, `ISimpleAudioVolume`) *if* Windows exposes the phone's stream as an
-  audio session; that is unconfirmed. Checklist item B5 (does the phone appear in the Volume mixer?) answers
-  it. Until then, use the phone's own media volume.
+- **Independent phone volume** — not available through this API, but available beside it. Windows plays
+  the phone's music as an audio session of its own on the output device, named after the phone (for example
+  "Microphone (My Phone A2DP SNK)"), and the Core Audio session API (`IAudioSessionManager2`,
+  `ISimpleAudioVolume`) can set that session's volume. This is what the slider uses. Measured on hardware
+  with only the phone playing: taking the session from 100% to 25% took the output device's peak level from
+  about 0.02 to about 0.005, and back.
 - **Per-stream output device** — not available through this API, and Windows has no documented API for
   routing another process's stream. Deferred; the MVP plays on the Windows default output.
 
-Both are deferred rather than promised.
+Output routing stays deferred rather than promised.
 
 ## Known limitations
 
@@ -381,6 +422,8 @@ Both are deferred rather than promised.
 - **Debug builds only:** `SOUNDBRIDGE_SIMULATE_CALLS=1` replaces the calls role with a simulated one. Seven
   seconds after call routing starts, a call from "Test Caller" rings, which is enough to see the prompt and
   every call button. The window title reads "SoundBridge (simulated calls)".
+- **Debug builds only:** `SOUNDBRIDGE_SIMULATE_LEVEL=1` feeds the live indicator a made-up, music-like level
+  so it can be seen without a phone playing. Combine it with `SOUNDBRIDGE_SIMULATE=ok`.
 - A run with `SOUNDBRIDGE_DATA_DIR` set is its own single-instance scope, so a development copy can start
   beside the installed app.
 

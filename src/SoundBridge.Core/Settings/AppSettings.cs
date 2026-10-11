@@ -39,11 +39,20 @@ public sealed record AppSettings
     /// <summary>Show a small Answer / Decline prompt on this PC when the phone rings.</summary>
     public bool ShowCallPrompt { get; init; } = true;
 
+    /// <summary>
+    /// How loud the phone's music is on this PC, 0 to 1. Windows starts every new stream at full volume, so
+    /// the app keeps the level and puts it back each time the link opens.
+    /// </summary>
+    public float PhoneVolumeLevel { get; init; } = 1f;
+
+    public bool PhoneMuted { get; init; }
+
     public string Theme { get; init; } = DefaultTheme;
 
     public AppSettings Normalized() => this with
     {
         Schema = CurrentSchema,
+        PhoneVolumeLevel = float.IsFinite(PhoneVolumeLevel) ? Math.Clamp(PhoneVolumeLevel, 0f, 1f) : 1f,
         PreferredDeviceId = string.IsNullOrWhiteSpace(PreferredDeviceId) ? null : PreferredDeviceId,
         PreferredDeviceName = string.IsNullOrWhiteSpace(PreferredDeviceId) ? null : PreferredDeviceName,
         MaxReconnectAttempts = ReconnectPolicy.ClampRetries(MaxReconnectAttempts),
