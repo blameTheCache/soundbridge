@@ -338,8 +338,7 @@
                     <TextBlock Margin="0,2,0,0"
                                FontSize="12"
                                Foreground="{DynamicResource TextFaintBrush}"
-                               TextTrimming="CharacterEllipsis"
-                               ToolTip="{Binding CallsStatusText}"
+                               TextWrapping="Wrap"
                                Visibility="{Binding ShowCallsLine, Converter={StaticResource BoolToVisibility}}">
                         <Run Text="Phone calls:" />
                         <Run Text="{Binding CallsStatusText, Mode=OneWay}" />
