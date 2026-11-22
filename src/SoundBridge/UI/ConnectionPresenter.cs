@@ -50,11 +50,17 @@ internal static class ConnectionPresenter
             ConnectionPhase.WaitingToRetry =>
                 new(StatusTone.Waiting, RetryTitle(snapshot, now), $"Attempt {snapshot.RetryAttempt} of {max} is next. {Reason(snapshot)}".TrimEnd(), "Cancel"),
 
+            ConnectionPhase.CheckingClosure =>
+                new(StatusTone.Busy, "Connection closed", "Checking whether the phone disconnected on purpose or moved out of range…", "Cancel"),
+
             ConnectionPhase.WaitingForBluetooth =>
                 new(StatusTone.Waiting, "Waiting for Bluetooth", "Bluetooth is off on this PC. SoundBridge will reconnect when it is back on.", "Cancel"),
 
             ConnectionPhase.Failed =>
                 new(StatusTone.Error, FailureTitle(snapshot), FailureDetail(snapshot), "Connect"),
+
+            ConnectionPhase.Disconnected when snapshot.ClosedByPhone =>
+                new(StatusTone.Idle, "Disconnected on the phone", "The phone ended the connection, so SoundBridge won't reconnect by itself. Connect when you want the phone's audio here again.", "Connect"),
 
             _ when !hasTarget && !hasSources =>
                 new(StatusTone.Idle, "Not connected", "Pair your phone with this PC in Windows Bluetooth settings, then choose it here.", "Connect"),
@@ -130,7 +136,7 @@ internal static class ConnectionPresenter
         ConnectionFailure.TimedOut => "The phone didn't answer in time. Check that it is nearby and has Bluetooth on.",
         ConnectionFailure.DeniedBySystem => "Windows refused the connection. Another app may already be receiving audio from this phone.",
         ConnectionFailure.ConnectionLost => "The phone disconnected or moved out of range.",
-        ConnectionFailure.Unstable => "The link was restored several times and the phone closed it again each time. If you switched the phone to another speaker or disconnected this PC on the phone, that is why. Connect when you want it back.",
+        ConnectionFailure.Unstable => "The link was restored several times and closed again each time, so SoundBridge stopped trying. Connect when you want it back.",
         ConnectionFailure.Unknown when !string.IsNullOrWhiteSpace(snapshot.FailureDetail) => $"Windows reported: {snapshot.FailureDetail}",
         ConnectionFailure.Unknown => "Windows reported an error without further detail.",
         _ => string.Empty,

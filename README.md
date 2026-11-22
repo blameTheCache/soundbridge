@@ -18,7 +18,8 @@ the PC, and the call moves to the PC's speaker or headphones and microphone.
 - **Hands-free phone calls** on Windows 11, with answer, decline, mute and hang-up on the PC.
 - **A volume slider for the phone** that is separate from the PC's volume, and an indicator that moves only
   when the phone's audio is actually measured.
-- **Reconnects by itself** after a dropped link, and never after you disconnect on purpose.
+- **Reconnects by itself** after a dropped link, and never after you disconnect on purpose, whether you do
+  that on the PC or on the phone.
 - **Tray icon and launch at sign-in**, with three dark and three light themes.
 - **Nothing to install on the phone**, and no audio is recorded or sent anywhere.
 
@@ -129,6 +130,8 @@ dotnet run --project src/SoundBridge
 | Waiting for Bluetooth | The PC's Bluetooth is off; reconnection resumes when it returns. | Cancel |
 | Waiting for the phone | The quick retries ran out; the phone is checked for every two minutes. | Cancel |
 | Checking for the phone… | One of those checks is in flight. | Cancel |
+| Connection closed | The link just closed; SoundBridge is asking whether the phone is still in range (a few seconds). | Cancel |
+| Disconnected on the phone | The phone ended the link and is still in range, so it was on purpose. Nothing reconnects. | Connect |
 | Couldn't connect / Connection lost | The last attempt failed and nothing is scheduled. | Connect |
 
 "Connected" means the link is open. **"Playing"** replaces it only while the phone's audio is actually
@@ -169,14 +172,27 @@ stop as soon as the quick retries run out instead.
 A connection you start by hand is not retried if its first attempt fails — you get the reason straight
 away. A refusal by Windows ("denied by system") is never retried.
 
-**If the phone keeps closing the link.** SoundBridge cannot tell a phone that wandered off from one whose
-owner picked another speaker or disconnected the PC on the phone. So it watches for the pattern instead: if
-a restored link is closed again within a minute, three times running, it stops with "Stopped reconnecting"
-and waits for you to click **Connect**. A link that holds for a minute counts as recovered.
+**Disconnecting on the phone is respected.** When the link closes, SoundBridge first asks the phone, over
+Bluetooth, for its list of services. This opens no audio and changes nothing on the phone, but only a phone
+that is in range with Bluetooth on can answer it.
+
+- **The phone answers** (within a second or two): it is still nearby, so its owner disconnected this PC on
+  the phone or sent the audio to another speaker. SoundBridge shows "Disconnected on the phone" and leaves
+  it alone, exactly as after **Disconnect**: no retries, no waiting, nothing on wake or Bluetooth coming back.
+  Phone audio stays on the phone, wherever you take it.
+- **The phone does not answer** within 10 seconds: it was carried out of range or lost Bluetooth, and the
+  reconnection above takes over.
+- **The check cannot be made** (Windows has no address for the phone, say): the link is treated as dropped,
+  as before.
+
+**If a restored link keeps closing.** As a backstop, if a restored link is closed again within a minute,
+three times running, SoundBridge stops with "Stopped reconnecting" and waits for you to click **Connect**.
+A link that holds for a minute counts as recovered.
 
 ### Intentional disconnects
 
-**Disconnect** and **Cancel** are final for the session. After either, nothing reconnects — not a retry
+**Disconnect**, **Cancel** and a disconnect made on the phone are final for the session. After any of them,
+nothing reconnects — not a retry
 timer, not waking from sleep, not Bluetooth coming back — until you click **Connect**.
 
 **A new session begins each time SoundBridge starts.** If **Connect when SoundBridge starts** is on (the
@@ -304,7 +320,7 @@ threads and never depends on the UI thread.
 
 ### Automated (run on every `build.ps1`)
 
-147 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
+167 unit tests in `tests/SoundBridge.Core.Tests`, against a fake link, a fake clock and a fake call transport:
 
 - duplicate connect requests while connecting or connected start nothing new;
 - manual disconnect cancels an in-flight attempt, ignores its late success, cancels a pending retry, and is
@@ -331,7 +347,11 @@ threads and never depends on the UI thread.
   the role is still being claimed moves no call;
 - a new link is not opened while another thread is still closing the old one, and the automatic connect at
   startup gives way to a connect or disconnect the user has already made;
-- the phone's audio session is matched on the phone's whole name, so "Pixel" does not match "Pixel 8".
+- the phone's audio session is matched on the phone's whole name, so "Pixel" does not match "Pixel 8";
+- a disconnect made on the phone: a closed link whose phone still answers ends in "Disconnected on the
+  phone" and is never reconnected (not by time, a sighting, or sleep and resume); a phone that does not
+  answer, answers too late, or cannot be checked is reconnected as before; Cancel, Connect, Bluetooth off,
+  sleep and dispose during the check all win over its late answer.
 
 As a check on the tests themselves, seven deliberate faults were introduced into the controller one at a
 time; six were caught, and the seventh (not cancelling the timer on disconnect) is harmless because a second
@@ -442,6 +462,10 @@ Output routing stays deferred rather than promised.
   hands-free link when they switch on or off. Not observed here yet.
 - The list shows the state of SoundBridge's own link. It does not show whether a phone is in range.
 - Waiting for the phone ends after 12 hours; after that, reconnecting needs a click.
+- Windows does not say why a Bluetooth link closed, so a disconnect on the phone is recognised by the phone
+  still answering afterwards. In the rare case that Windows itself closes the link while the phone is nearby,
+  SoundBridge also stays disconnected; click **Connect**. While the phone is disconnected that way, its calls
+  are not pulled back to the PC either, until the next connect.
 - Sleep handling relies on Windows' suspend/resume notifications. If a device does not deliver them (some
   Modern Standby configurations), recovery falls back to the ordinary dropped-link path.
 - Windows' **Startup apps** switch (Task Manager) can disable the sign-in entry while SoundBridge's toggle

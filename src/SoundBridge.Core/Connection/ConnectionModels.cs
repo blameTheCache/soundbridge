@@ -28,6 +28,12 @@ public enum ConnectionPhase
 
     /// <summary>The last attempt failed and nothing further is scheduled.</summary>
     Failed,
+
+    /// <summary>
+    /// An established link has just closed and the controller is asking whether the phone still answers, to
+    /// learn whether the phone ended it on purpose (left alone) or went out of reach (reconnected).
+    /// </summary>
+    CheckingClosure,
 }
 
 public enum ConnectionFailure
@@ -82,6 +88,13 @@ public sealed record ConnectionSnapshot
 
     /// <summary>True while Connecting as one of the slow checks made from <see cref="ConnectionPhase.WaitingForPhone"/>.</summary>
     public bool BackgroundCheck { get; init; }
+
+    /// <summary>
+    /// True while Disconnected because the phone ended the link itself and still answered on Bluetooth
+    /// afterwards: its owner disconnected this PC on the phone or chose another speaker. Nothing reconnects
+    /// until the next connect.
+    /// </summary>
+    public bool ClosedByPhone { get; init; }
 
     /// <summary>True while a link is open or the controller is working towards one.</summary>
     public bool IsActive => Phase is not (ConnectionPhase.Disconnected or ConnectionPhase.Failed);

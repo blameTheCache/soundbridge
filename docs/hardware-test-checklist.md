@@ -63,7 +63,10 @@ Settings → **Reconnect automatically** on, attempts = 5.
 | D3a | While it is waiting, turn the phone's Bluetooth back on. | It reconnects within two minutes without a click, sooner if Windows notices the phone first. The log shows either "was seen on Bluetooth; checking now" or a scheduled check succeeding. |
 | D3b | Turn **Keep waiting for the phone** off and repeat D3. | After attempt 5: "Couldn't reconnect … Stopped after 5 reconnection attempts." Nothing further happens until you click **Connect**. |
 | D3c | While it is waiting, click **Cancel**, then turn the phone's Bluetooth back on. | "Not connected", and it stays that way. |
-| D3d | While connected, disconnect this PC from the phone's own Bluetooth menu. Each time SoundBridge reconnects, do it again straight away. | After the third quick reconnection is closed, SoundBridge shows "Stopped reconnecting" and leaves the phone alone until you click **Connect**. |
+| D3d | While connected, disconnect this PC from the phone's own Bluetooth menu. | Within a few seconds: "Connection closed", then "Disconnected on the phone". Phone audio stays on the phone. Nothing reconnects (wait two minutes, then sleep and wake the PC). The log shows "Reachability check … Success" and "so the link was closed on the phone". |
+| D3e | While connected, switch the phone's media output to another speaker or earbuds. | As D3d: "Disconnected on the phone", and the audio stays on the other speaker. |
+| D3f | While connected and playing, walk out of range with the phone (or put it in another room). | "Connection closed", then within about ten seconds "Reconnecting in N s" (not "Disconnected on the phone"). The log shows the reachability check failing. Coming back in range reconnects as in D3/D3a. |
+| D3g | After D3d, click **Connect**. | Connects normally. |
 | D4 | Repeat D1, and during "Reconnecting in N s" click **Cancel**. | "Not connected". Wait two minutes with the phone's Bluetooth back on: it must **not** reconnect. |
 | D5 | Connect, click **Disconnect**, then turn the phone's Bluetooth off and on. | Stays "Not connected". |
 | D6 | Turn **Reconnect automatically** off, connect, then turn the phone's Bluetooth off. | "Connection lost" with no retries. |

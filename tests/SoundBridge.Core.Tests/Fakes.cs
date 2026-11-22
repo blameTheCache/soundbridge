@@ -82,6 +82,67 @@ internal sealed class FakeLinkFactory : IAudioLinkFactory
     }
 }
 
+/// <summary>A reachability check whose answer the test decides, and when.</summary>
+internal sealed class FakeReachability : IPhoneReachability
+{
+    private readonly Lock _gate = new();
+    private readonly List<Probe> _probes = [];
+
+    public IReadOnlyList<Probe> Probes
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return [.. _probes];
+            }
+        }
+    }
+
+    public Probe Latest => Probes[^1];
+
+    /// <summary>When set, the check throws before returning a task, like a radio API that fails at once.</summary>
+    public Exception? ThrowOnProbe { get; set; }
+
+    public Task<PhoneReachability> ProbeAsync(AudioSource device, CancellationToken cancellationToken)
+    {
+        if (ThrowOnProbe is { } exception)
+        {
+            throw exception;
+        }
+
+        var probe = new Probe(device, cancellationToken);
+        lock (_gate)
+        {
+            _probes.Add(probe);
+        }
+
+        return probe.Task;
+    }
+
+    internal sealed class Probe
+    {
+        private readonly TaskCompletionSource<PhoneReachability> _answer = new();
+        private readonly CancellationToken _token;
+
+        public Probe(AudioSource device, CancellationToken token)
+        {
+            Device = device;
+            _token = token;
+        }
+
+        public AudioSource Device { get; }
+
+        public bool CancellationRequested => _token.IsCancellationRequested;
+
+        public Task<PhoneReachability> Task => _answer.Task;
+
+        public void Answer(PhoneReachability reachability) => _answer.TrySetResult(reachability);
+
+        public void Fail(Exception exception) => _answer.TrySetException(exception);
+    }
+}
+
 internal sealed class RecordingLog : ILog
 {
     private readonly ConcurrentQueue<string> _lines = new();

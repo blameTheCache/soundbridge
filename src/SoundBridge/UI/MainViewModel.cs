@@ -745,6 +745,19 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
     private void OnPhoneSeen(object? sender, EventArgs e)
     {
         _controller.NotifyPhoneSeen();
+
+        // While a closed link is being checked, the sighting is most likely the check itself. And once the phone
+        // has ended the connection on purpose, pulling its calls back to this PC would overrule that just the
+        // same; they come back with the next connect.
+        var music = _controller.Current;
+        if (music.Phase == ConnectionPhase.CheckingClosure || music.ClosedByPhone)
+        {
+            _log.Info(Category, music.ClosedByPhone
+                ? "The phone showed up on Bluetooth, but it was disconnected on the phone; leaving its calls alone."
+                : "The phone showed up on Bluetooth while a closed link is being checked; leaving its calls alone.");
+            return;
+        }
+
         _calls.NotifyPhoneReachable();
     }
 
@@ -1120,6 +1133,7 @@ internal sealed class MainViewModel : ObservableObject, IDisposable
                     ConnectionPhase.WaitingForPhone => "Waiting for phone",
                     ConnectionPhase.Connecting when snapshot.RetryAttempt == 0 => "Connecting…",
                     ConnectionPhase.WaitingForBluetooth => "Waiting for Bluetooth",
+                    ConnectionPhase.CheckingClosure => "Checking…",
                     _ => "Reconnecting…",
                 };
         }

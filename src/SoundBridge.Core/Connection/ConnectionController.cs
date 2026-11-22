@@ -15,6 +15,12 @@ namespace SoundBridge.Core.Connection;
 /// session start. <see cref="Disconnect"/> ends that: nothing reconnects afterwards until
 /// <see cref="Connect"/> is called again.
 /// </para>
+/// <para>
+/// A disconnect made on the phone is respected the same way. When an established link closes and an
+/// <see cref="IPhoneReachability"/> is available, the controller first asks whether the phone still answers.
+/// If it does, the phone ended the link on purpose and the controller stops, as after <see cref="Disconnect"/>.
+/// Only a phone that does not answer (out of range, Bluetooth off) is reconnected.
+/// </para>
 /// </summary>
 public sealed class ConnectionController : IDisposable
 {
@@ -28,8 +34,13 @@ public sealed class ConnectionController : IDisposable
     private readonly TimeProvider _time;
     private readonly ILog _log;
     private readonly List<Attempt> _retired = [];
+    private readonly IPhoneReachability? _reachability;
+
+    // Cancelled outside the lock, by Flush, so no probe callback can ever run while _gate is held.
+    private readonly List<CancellationTokenSource> _retiredChecks = [];
 
     private ReconnectPolicy _policy;
+    private CancellationTokenSource? _check;
     private ConnectionSnapshot _current = ConnectionSnapshot.Idle;
     private ConnectionSnapshot _lastRaised = ConnectionSnapshot.Idle;
     private AudioSource? _device;
@@ -47,12 +58,17 @@ public sealed class ConnectionController : IDisposable
     private bool _connectedByRecovery;
     private int _unstableRecoveries;
 
-    public ConnectionController(IAudioLinkFactory factory, ReconnectPolicy policy, TimeProvider? time = null, ILog? log = null)
+    /// <param name="reachability">
+    /// Tells a disconnect made on the phone from a phone that went out of range. Without it every closed link
+    /// is treated as lost and reconnected, subject to the policy.
+    /// </param>
+    public ConnectionController(IAudioLinkFactory factory, ReconnectPolicy policy, TimeProvider? time = null, ILog? log = null, IPhoneReachability? reachability = null)
     {
         _factory = factory;
         _policy = policy;
         _time = time ?? TimeProvider.System;
         _log = log ?? NullLog.Instance;
+        _reachability = reachability;
     }
 
     /// <summary>
@@ -242,7 +258,8 @@ public sealed class ConnectionController : IDisposable
 
             if (!available)
             {
-                if (_current.Phase is ConnectionPhase.Connecting or ConnectionPhase.Connected or ConnectionPhase.WaitingToRetry or ConnectionPhase.WaitingForPhone)
+                if (_current.Phase is ConnectionPhase.Connecting or ConnectionPhase.Connected or ConnectionPhase.WaitingToRetry
+                    or ConnectionPhase.WaitingForPhone or ConnectionPhase.CheckingClosure)
                 {
                     // Anything that was in progress followed an established connection or a session start,
                     // or it would not be waiting; keep it recoverable.
@@ -464,6 +481,7 @@ public sealed class ConnectionController : IDisposable
 
     private void OnLinkClosed(Attempt attempt)
     {
+        Check? check = null;
         lock (_gate)
         {
             if (!ReferenceEquals(_attempt, attempt))
@@ -486,21 +504,109 @@ public sealed class ConnectionController : IDisposable
             _log.Warn(Category, $"Link to '{_device!.Name}' was closed by the phone or by Windows.");
             RetireCurrentLocked();
 
+            // Measured now, not once the check below has answered, which can take seconds.
             var shortLived = _time.GetLocalNow() - _connectedSince < _policy.StableAfter;
-            _unstableRecoveries = _connectedByRecovery && shortLived ? _unstableRecoveries + 1 : 0;
-            if (_unstableRecoveries >= _policy.MaxUnstableRecoveries)
+            if (_reachability is null)
             {
-                _log.Warn(Category, $"The link closed again after each of the last {_unstableRecoveries} reconnections; not reconnecting any more.");
-                _unstableRecoveries = 0;
-                FailLocked(ConnectionFailure.Unstable, null, exhausted: false);
+                RecoverLostLinkLocked(shortLived);
             }
             else
             {
-                HandleFailureLocked(ConnectionFailure.ConnectionLost, null, retriesDone: 0);
+                check = BeginClosureCheckLocked(shortLived);
             }
         }
 
         Flush(null);
+        if (check is not null)
+        {
+            _ = RunClosureCheckAsync(check);
+        }
+    }
+
+    /// <summary>Asks whether the phone still answers before deciding what the closed link means.</summary>
+    private Check BeginClosureCheckLocked(bool shortLived)
+    {
+        _check = new CancellationTokenSource();
+        var check = new Check(++_epoch, _device!, shortLived, _policy.ReachabilityTimeout, _check.Token);
+        _log.Info(Category, $"Checking whether '{_device!.Name}' still answers on Bluetooth, to tell a disconnect on the phone from a lost connection.");
+        SetLocked(new ConnectionSnapshot
+        {
+            Phase = ConnectionPhase.CheckingClosure,
+            Device = _device,
+            MaxRetries = _policy.MaxRetries,
+        });
+        return check;
+    }
+
+    private async Task RunClosureCheckAsync(Check check)
+    {
+        PhoneReachability answer;
+        string? problem = null;
+        try
+        {
+            answer = await _reachability!.ProbeAsync(check.Device, check.Token)
+                .WaitAsync(check.Timeout, _time, check.Token)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            answer = PhoneReachability.Unreachable;
+            problem = $"did not answer within {check.Timeout.TotalSeconds:0.#} s";
+        }
+        catch (OperationCanceledException) when (check.Token.IsCancellationRequested)
+        {
+            // Superseded: whatever replaced the check owns the state now.
+            return;
+        }
+        catch (Exception ex)
+        {
+            answer = PhoneReachability.Unknown;
+            problem = $"the check failed: {ex.Message}";
+        }
+
+        lock (_gate)
+        {
+            if (_disposed || check.Epoch != _epoch || _current.Phase != ConnectionPhase.CheckingClosure)
+            {
+                _log.Info(Category, $"Ignored a stale answer ({answer}) about '{check.Device.Name}'.");
+                return;
+            }
+
+            RetireCheckLocked();
+            if (answer == PhoneReachability.Reachable)
+            {
+                _log.Info(Category, $"'{check.Device.Name}' still answers on Bluetooth, so the link was closed on the phone. Leaving it disconnected until you connect again.");
+                _recoverable = false;
+                _resumeOnWake = false;
+                _unstableRecoveries = 0;
+                SetLocked(new ConnectionSnapshot { Phase = ConnectionPhase.Disconnected, Device = _device, ClosedByPhone = true });
+            }
+            else
+            {
+                _log.Info(Category, answer == PhoneReachability.Unreachable
+                    ? $"'{check.Device.Name}' {problem ?? "did not answer"}; treating it as out of range."
+                    : $"Could not tell whether '{check.Device.Name}' is in range ({problem ?? "no answer either way"}); treating the link as lost.");
+                RecoverLostLinkLocked(check.ShortLived);
+            }
+        }
+
+        Flush(null);
+    }
+
+    /// <summary>The link closed and the phone is not known to have done it on purpose: reconnect, within limits.</summary>
+    private void RecoverLostLinkLocked(bool shortLived)
+    {
+        _unstableRecoveries = _connectedByRecovery && shortLived ? _unstableRecoveries + 1 : 0;
+        if (_unstableRecoveries >= _policy.MaxUnstableRecoveries)
+        {
+            _log.Warn(Category, $"The link closed again after each of the last {_unstableRecoveries} reconnections; not reconnecting any more.");
+            _unstableRecoveries = 0;
+            FailLocked(ConnectionFailure.Unstable, null, exhausted: false);
+        }
+        else
+        {
+            HandleFailureLocked(ConnectionFailure.ConnectionLost, null, retriesDone: 0);
+        }
     }
 
     private void OnRetryTimer(object? state)
@@ -660,7 +766,17 @@ public sealed class ConnectionController : IDisposable
         _epoch++;
         _retryTimer?.Dispose();
         _retryTimer = null;
+        RetireCheckLocked();
         RetireCurrentLocked();
+    }
+
+    private void RetireCheckLocked()
+    {
+        if (_check is { } check)
+        {
+            _check = null;
+            _retiredChecks.Add(check);
+        }
     }
 
     private void RetireCurrentLocked()
@@ -688,12 +804,31 @@ public sealed class ConnectionController : IDisposable
         lock (_closing)
         {
             Attempt[] retired;
+            CancellationTokenSource[] checks;
             lock (_gate)
             {
                 retired = [.. _retired];
                 _retired.Clear();
+                checks = [.. _retiredChecks];
+                _retiredChecks.Clear();
                 changed = !ReferenceEquals(_current, _lastRaised);
                 _lastRaised = _current;
+            }
+
+            foreach (var check in checks)
+            {
+                try
+                {
+                    check.Cancel();
+                }
+                catch (Exception ex)
+                {
+                    _log.Warn(Category, $"Cancelling a reachability check failed: {ex.Message}");
+                }
+                finally
+                {
+                    check.Dispose();
+                }
             }
 
             foreach (var attempt in retired)
@@ -727,6 +862,9 @@ public sealed class ConnectionController : IDisposable
         LinkOpenStatus.DeviceUnavailable => ConnectionFailure.DeviceUnavailable,
         _ => ConnectionFailure.Unknown,
     };
+
+    /// <summary>One reachability check after a closed link. Its epoch ties its answer to the activity that asked.</summary>
+    private sealed record Check(long Epoch, AudioSource Device, bool ShortLived, TimeSpan Timeout, CancellationToken Token);
 
     private sealed class Attempt(long epoch, IAudioLink link, int retry, bool background)
     {

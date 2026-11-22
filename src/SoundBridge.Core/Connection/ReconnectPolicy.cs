@@ -43,6 +43,13 @@ public sealed record ReconnectPolicy
     /// </summary>
     public int MaxUnstableRecoveries { get; init; } = 3;
 
+    /// <summary>
+    /// How long to wait, after a link closes, for the phone to answer the check that tells a disconnect on the
+    /// phone from a phone that went out of range. A phone in range answers within a second or two; one out of
+    /// range never does, and Windows gives up paging it after about five seconds.
+    /// </summary>
+    public TimeSpan ReachabilityTimeout { get; init; } = TimeSpan.FromSeconds(10);
+
     /// <summary>Delay before the given 1-based retry: base, 2x base, 4x base, ... capped at <see cref="MaxDelay"/>.</summary>
     public TimeSpan DelayBefore(int retry)
     {

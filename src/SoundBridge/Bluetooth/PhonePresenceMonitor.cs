@@ -1,8 +1,6 @@
-using System.Globalization;
 using SoundBridge.Core.Connection;
 using SoundBridge.Core.Diagnostics;
 using Windows.Devices.Bluetooth;
-using Windows.Devices.Enumeration;
 
 namespace SoundBridge.Bluetooth;
 
@@ -13,7 +11,6 @@ namespace SoundBridge.Bluetooth;
 internal sealed class PhonePresenceMonitor(ILog log) : IDisposable
 {
     private const string Category = "Bluetooth";
-    private const string AddressProperty = "System.DeviceInterface.Bluetooth.DeviceAddress";
 
     private readonly Lock _gate = new();
     private BluetoothDevice? _device;
@@ -48,10 +45,7 @@ internal sealed class PhonePresenceMonitor(ILog log) : IDisposable
 
         try
         {
-            var info = await DeviceInformation.CreateFromIdAsync(phone.Id, [AddressProperty]).AsTask().ConfigureAwait(false);
-            if (!info.Properties.TryGetValue(AddressProperty, out var value) ||
-                value is not string hex ||
-                !ulong.TryParse(hex, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var address))
+            if (await BluetoothAddresses.TryGetAsync(phone.Id).ConfigureAwait(false) is not { } address)
             {
                 log.Warn(Category, $"Windows gave no Bluetooth address for '{phone.Name}'; its return will only be noticed by the periodic checks.");
                 return;

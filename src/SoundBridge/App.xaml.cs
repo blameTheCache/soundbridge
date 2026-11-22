@@ -127,16 +127,19 @@ public partial class App : Application, IAppShell
         themes.Apply(settings.Theme);
 
         IAudioLinkFactory links = new BluetoothAudioLinkFactory(log);
+        IPhoneReachability reachability = new BluetoothPhoneReachability(log);
         var title = "SoundBridge";
 #if DEBUG
         if (Environment.GetEnvironmentVariable("SOUNDBRIDGE_SIMULATE") is { Length: > 0 } script)
         {
-            links = new SimulatedAudioLinkFactory(script, log);
+            var simulated = new SimulatedAudioLinkFactory(script, log);
+            links = simulated;
+            reachability = simulated;
             title = "SoundBridge (simulated link)";
         }
 #endif
 
-        var controller = _controller = new ConnectionController(links, settings.ToReconnectPolicy(), log: log);
+        var controller = _controller = new ConnectionController(links, settings.ToReconnectPolicy(), log: log, reachability: reachability);
         var watcher = _watcher = new AudioSourceWatcher(log);
         var radio = _radio = new BluetoothRadioMonitor(log);
         var presence = _presence = new PhonePresenceMonitor(log);
